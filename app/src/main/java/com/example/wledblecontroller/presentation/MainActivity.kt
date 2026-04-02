@@ -1,99 +1,133 @@
-/* While this template provides a good starting point for using Wear Compose, you can always
- * take a look at https://github.com/android/wear-os-samples/tree/main/ComposeStarter to find the
- * most up to date changes to the libraries and their usages.
- */
+package com.example.wledble
 
-package com.example.wledblecontroller.presentation
-
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.stringResource
-import androidx.wear.compose.foundation.lazy.TransformingLazyColumn
-import androidx.wear.compose.foundation.lazy.rememberTransformingLazyColumnState
-import androidx.wear.compose.material3.AppScaffold
-import androidx.wear.compose.material3.Button
-import androidx.wear.compose.material3.ButtonDefaults
-import androidx.wear.compose.material3.EdgeButton
-import androidx.wear.compose.material3.ListHeader
-import androidx.wear.compose.material3.MaterialTheme
-import androidx.wear.compose.material3.ScreenScaffold
-import androidx.wear.compose.material3.SurfaceTransformation
-import androidx.wear.compose.material3.Text
-import androidx.wear.compose.material3.lazy.rememberTransformationSpec
-import androidx.wear.compose.material3.lazy.transformedHeight
-import androidx.wear.compose.ui.tooling.preview.WearPreviewDevices
-import androidx.wear.compose.ui.tooling.preview.WearPreviewFontScales
-import com.example.wledblecontroller.R
-import com.example.wledblecontroller.presentation.theme.WLEDBLEControllerTheme
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.core.content.ContextCompat
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.wear.compose.navigation.SwipeDismissableNavHost
+import androidx.wear.compose.navigation.composable
+import androidx.wear.compose.navigation.rememberSwipeDismissableNavController
+import com.example.wledble.model.ConnectionState
+import com.example.wledble.presentation.screens.ControlScreen
+import com.example.wledble.presentation.screens.ScanScreen
+import com.example.wledble.presentation.theme.WledBleTheme
+import com.example.wledble.viewmodel.WledViewModel
 
-class MainActivity : ComponentActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContent {
-            WearApp("Android")
+/**
+ * Single-activity WearOS app.
+ *
+ * Navigation graph:
+ *   scan ──connect──▶ control
+ *   control ──swipe-right──▶ scan   (also triggered by disconnect)
+ *
+ * SwipeDismissableNavHost provides the native swipe-to-go-back gesture.
+ * All BLE permission logic lives here to keep Composables and ViewModel
+ * framework-agnostic.
+ */
+class MainActivity : FragmentActivity() {
+
+    private val viewModel: WledViewModel by viewModels()
+
+    private val permissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        if (results.all { it.value }) {
+            viewModel.startScan()
         }
+        // If denied, user sees idle scan screen with "Scan Again" button
+        // which re-triggers checkPermissionsAndScan() on tap.
     }
-}
 
-@Composable
-fun WearApp(greetingName: String) {
-    WLEDBLEControllerTheme {
-        AppScaffold {
-            val listState = rememberTransformingLazyColumnState()
-            val transformationSpec = rememberTransformationSpec()
-            ScreenScaffold(
-                scrollState = listState,
-                edgeButton = {
-                    EdgeButton(
-                        onClick = { /*TODO*/ },
-                        colors =
-                            ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                            ),
-                    ) {
-                        Text("More")
-                    }
-                },
-            ) { contentPadding -> // ScreenScaffold provides default padding; adjust as needed
-                TransformingLazyColumn(contentPadding = contentPadding, state = listState) {
-                    item {
-                        ListHeader(
-                            modifier =
-                                Modifier.fillMaxWidth().transformedHeight(this, transformationSpec),
-                            transformation = SurfaceTransformation(transformationSpec),
-                        ) {
-                            Text(text = stringResource(R.string.hello_world, greetingName))
+    override fun onCreate(savedInstanceState: Bundle?) {
+        installSplashScreen()
+        super.onCreate(savedInstanceState)
+
+        setContent {
+            WledBleTheme {
+                val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+                val navController = rememberSwipeDismissableNavController()
+
+                // Automatically navigate when connection state changes.
+                // LaunchedEffect key = connectionState class (not instance) so we
+                // don't re-navigate on every state data field update.
+                LaunchedEffect(uiState.connectionState::class) {
+                    when (uiState.connectionState) {
+                        is ConnectionState.Connected -> {
+                            if (navController.currentDestination?.route != "control") {
+                                navController.navigate("control") {
+                                    // Keep scan on back-stack so swipe-right returns to it
+                                    launchSingleTop = true
+                                }
+                            }
                         }
-                    }
-                    item {
-                        Button(onClick = { /*TODO*/ }, modifier = Modifier.fillMaxWidth()) {
-                            Text("Button A")
+                        is ConnectionState.Disconnected -> {
+                            // Pop back to scan when explicitly disconnected
+                            if (navController.currentDestination?.route == "control") {
+                                navController.popBackStack()
+                            }
                         }
+                        else -> Unit
                     }
-                    item {
-                        Button(onClick = { /*TODO*/ }, modifier = Modifier.fillMaxWidth()) {
-                            Text("Button B")
-                        }
+                }
+
+                SwipeDismissableNavHost(
+                    navController    = navController,
+                    startDestination = "scan"
+                ) {
+                    composable("scan") {
+                        ScanScreen(
+                            uiState     = uiState,
+                            onStartScan = { checkPermissionsAndScan() },
+                            onConnect   = { viewModel.connect(it.device) }
+                        )
                     }
-                    item {
-                        Button(onClick = { /*TODO*/ }, modifier = Modifier.fillMaxWidth()) {
-                            Text("Button C")
-                        }
+                    composable("control") {
+                        ControlScreen(
+                            uiState          = uiState,
+                            onTogglePower    = { viewModel.togglePower() },
+                            onActivatePreset = { viewModel.activatePreset(it) },
+                            onDisconnect     = {
+                                viewModel.disconnect()
+                                // NavController pop is driven by state above
+                            }
+                        )
                     }
                 }
             }
         }
-    }
-}
 
-@WearPreviewDevices
-@WearPreviewFontScales
-@Composable
-fun DefaultPreview() {
-    WearApp("Preview Android")
+        // Kick off scan immediately on first launch
+        checkPermissionsAndScan()
+    }
+
+    private fun checkPermissionsAndScan() {
+        val required = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT
+            )
+        } else {
+            // API 26–30: location required for BLE scan results
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+
+        val missing = required.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+
+        if (missing.isEmpty()) {
+            viewModel.startScan()
+        } else {
+            permissionLauncher.launch(missing.toTypedArray())
+        }
+    }
 }
