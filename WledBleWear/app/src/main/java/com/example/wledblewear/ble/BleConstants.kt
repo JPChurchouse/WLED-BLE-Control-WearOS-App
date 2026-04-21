@@ -1,4 +1,4 @@
-package com.example.wledble.ble
+package com.jpchurchouse.wledble.ble
 
 import java.util.UUID
 

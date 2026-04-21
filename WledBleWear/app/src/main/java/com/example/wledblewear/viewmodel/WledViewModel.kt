@@ -1,10 +1,10 @@
-package com.example.wledble.viewmodel
+package com.jpchurchouse.wledble.viewmodel
 
 import android.app.Application
 import android.bluetooth.BluetoothDevice
 import androidx.lifecycle.AndroidViewModel
-import com.example.wledble.ble.BleManager
-import com.example.wledble.model.WledUiState
+import com.jpchurchouse.wledble.ble.BleManager
+import com.jpchurchouse.wledble.model.WledUiState
 import kotlinx.coroutines.flow.StateFlow
 
 /**

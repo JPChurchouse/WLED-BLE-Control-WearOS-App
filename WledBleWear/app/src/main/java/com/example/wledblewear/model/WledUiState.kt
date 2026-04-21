@@ -1,4 +1,4 @@
-package com.example.wledble.model
+package com.jpchurchouse.wledble.model
 
 /** All UI-visible connection states. */
 sealed class ConnectionState {

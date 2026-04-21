@@ -6,4 +6,4 @@
 -keepclasseswithmembers class kotlinx.serialization.** { kotlinx.serialization.KSerializer serializer(...); }
 
 # Keep our data models
--keep class com.example.wledble.model.** { *; }
+-keep class com.jpchurchouse.wledble.model.** { *; }

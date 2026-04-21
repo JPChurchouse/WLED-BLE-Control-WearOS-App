@@ -1,4 +1,4 @@
-package com.example.wledble
+package com.jpchurchouse.wledble
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -16,11 +16,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.wear.compose.navigation.SwipeDismissableNavHost
 import androidx.wear.compose.navigation.composable
 import androidx.wear.compose.navigation.rememberSwipeDismissableNavController
-import com.example.wledble.model.ConnectionState
-import com.example.wledble.presentation.screens.ControlScreen
-import com.example.wledble.presentation.screens.ScanScreen
-import com.example.wledble.presentation.theme.WledBleTheme
-import com.example.wledble.viewmodel.WledViewModel
+import com.jpchurchouse.wledble.model.ConnectionState
+import com.jpchurchouse.wledble.presentation.screens.ControlScreen
+import com.jpchurchouse.wledble.presentation.screens.ScanScreen
+import com.jpchurchouse.wledble.presentation.theme.WledBleTheme
+import com.jpchurchouse.wledble.viewmodel.WledViewModel
 
 class MainActivity : ComponentActivity() {
 
