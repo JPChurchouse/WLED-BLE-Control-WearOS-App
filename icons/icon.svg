@@ -1,0 +1,18 @@
+<svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <rect width="512" height="512" fill="#0d1117"/>
+  <circle cx="256" cy="226" r="200" fill="#111827"/>
+
+  <rect x="94"  y="144" width="53" height="196" rx="11" fill="#ff3366"/>
+  <rect x="162" y="242" width="53" height="98"  rx="11" fill="#ff8833"/>
+  <rect x="230" y="196" width="53" height="144" rx="11" fill="#44dd66"/>
+  <rect x="298" y="242" width="53" height="98"  rx="11" fill="#33bbff"/>
+  <rect x="366" y="144" width="53" height="196" rx="11" fill="#8844ff"/>
+
+  <rect x="74" y="346" width="364" height="4" rx="2" fill="#1a2435"/>
+
+  <polyline points="244,370 256,378 278,390 256,402 278,414 256,422 244,430"
+    stroke="#5588bb" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+
+  <text x="256" y="482" text-anchor="middle" fill="#3a5a7a" font-size="20"
+    font-family="sans-serif" font-weight="500" letter-spacing="4">WLED BLE</text>
+</svg>
