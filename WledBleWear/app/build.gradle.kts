@@ -1,3 +1,9 @@
+import java.util.Properties
+
+val keystoreProps = Properties().apply {
+    load(rootProject.file("keystore.properties").inputStream())
+}
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -6,24 +12,31 @@ plugins {
 }
 
 android {
-    namespace   = "com.example.wledble"
+    namespace   = "com.jpchurchouse.wledble"
     compileSdk  = 35
 
     defaultConfig {
-        applicationId = "com.example.wledble"
-        minSdk        = 26   // Wear OS minimum; covers all current devices
+        applicationId = "com.jpchurchouse.wledble"
+        minSdk        = 26
         targetSdk     = 35
         versionCode   = 1
         versionName   = "1.0"
     }
 
+    signingConfigs {
+        create("release") {
+            storeFile     = file(keystoreProps["storeFile"] as String)
+            storePassword = keystoreProps["storePassword"] as String
+            keyAlias      = keystoreProps["keyAlias"] as String
+            keyPassword   = keystoreProps["keyPassword"] as String
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig   = signingConfigs.getByName("release")
             isMinifyEnabled = true
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
 

@@ -1,4 +1,4 @@
-package com.example.wledble.model
+package com.jpchurchouse.wledble.model
 
 import android.bluetooth.BluetoothDevice
 

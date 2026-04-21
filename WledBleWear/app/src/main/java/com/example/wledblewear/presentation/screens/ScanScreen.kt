@@ -1,4 +1,4 @@
-package com.example.wledble.presentation.screens
+package com.jpchurchouse.wledble.presentation.screens
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.Composable
@@ -13,10 +13,10 @@ import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.items
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.material.*
-import com.example.wledble.R
-import com.example.wledble.model.ConnectionState
-import com.example.wledble.model.ScannedDevice
-import com.example.wledble.model.WledUiState
+import com.jpchurchouse.wledble.R
+import com.jpchurchouse.wledble.model.ConnectionState
+import com.jpchurchouse.wledble.model.ScannedDevice
+import com.jpchurchouse.wledble.model.WledUiState
 
 @Composable
 fun ScanScreen(

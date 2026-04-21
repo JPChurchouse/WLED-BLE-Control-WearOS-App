@@ -1,4 +1,4 @@
-package com.example.wledble.presentation.screens
+package com.jpchurchouse.wledble.presentation.screens
 
 import androidx.compose.foundation.BorderStroke             // ← for chipBorder fix
 import androidx.compose.foundation.background
@@ -17,11 +17,11 @@ import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.items
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.material.*
-import com.example.wledble.R
-import com.example.wledble.model.ConnectionState
-import com.example.wledble.model.WledUiState
-import com.example.wledble.presentation.theme.WledActiveChipBg
-import com.example.wledble.presentation.theme.WledCyan
+import com.jpchurchouse.wledble.R
+import com.jpchurchouse.wledble.model.ConnectionState
+import com.jpchurchouse.wledble.model.WledUiState
+import com.jpchurchouse.wledble.presentation.theme.WledActiveChipBg
+import com.jpchurchouse.wledble.presentation.theme.WledCyan
 
 @Composable
 fun ControlScreen(
