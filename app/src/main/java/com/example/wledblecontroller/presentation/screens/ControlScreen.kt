@@ -1,5 +1,6 @@
-package com.example.wledble.presentation.screens
+package com.jpchurchouse.wledblewear.presentation.screens
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -11,15 +12,16 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.wear.compose.foundation.lazy.AutoCenteringParams
 import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.items
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.material.*
-import com.example.wledble.R
-import com.example.wledble.model.ConnectionState
-import com.example.wledble.model.WledUiState
-import com.example.wledble.presentation.theme.WledActiveChipBg
-import com.example.wledble.presentation.theme.WledCyan
+import com.jpchurchouse.wledblewear.R
+import com.jpchurchouse.wledblewear.model.ConnectionState
+import com.jpchurchouse.wledblewear.model.WledUiState
+import com.jpchurchouse.wledblewear.presentation.theme.WledActiveChipBg
+import com.jpchurchouse.wledblewear.presentation.theme.WledCyan
 
 @Composable
 fun ControlScreen(
@@ -42,8 +44,6 @@ fun ControlScreen(
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 28.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-
-            // ── Connection status indicator ─────────────────────────────────
             item {
                 val (dotColor, statusText) = when (val cs = uiState.connectionState) {
                     is ConnectionState.Connected     -> Color(0xFF4CAF50) to "Connected"
@@ -55,17 +55,12 @@ fun ControlScreen(
                     horizontalArrangement = Arrangement.Center,
                     verticalAlignment     = Alignment.CenterVertically
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .background(dotColor, CircleShape)
-                    )
+                    Box(Modifier.size(8.dp).background(dotColor, CircleShape))
                     Spacer(Modifier.width(6.dp))
                     Text(statusText, style = MaterialTheme.typography.caption1)
                 }
             }
 
-            // ── Power toggle ────────────────────────────────────────────────
             item {
                 ToggleChip(
                     checked         = uiState.isPowered,
@@ -77,7 +72,6 @@ fun ControlScreen(
                         )
                     },
                     toggleControl = {
-                        // SwitchIcon renders the WearOS-styled toggle switch icon
                         Icon(
                             imageVector  = ToggleChipDefaults.switchIcon(uiState.isPowered),
                             contentDescription = if (uiState.isPowered) "On" else "Off"
@@ -87,7 +81,6 @@ fun ControlScreen(
                 )
             }
 
-            // ── Presets header / loading ────────────────────────────────────
             item {
                 when {
                     uiState.isLoadingPresets -> {
@@ -98,10 +91,7 @@ fun ControlScreen(
                         ) {
                             CircularProgressIndicator(modifier = Modifier.size(14.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text(
-                                stringResource(R.string.loading_presets),
-                                style = MaterialTheme.typography.caption1
-                            )
+                            Text(stringResource(R.string.loading_presets), style = MaterialTheme.typography.caption1)
                         }
                     }
                     uiState.presets.isNotEmpty() -> {
@@ -112,7 +102,7 @@ fun ControlScreen(
                             modifier  = Modifier.fillMaxWidth()
                         )
                     }
-                    uiState.presets.isEmpty() && !uiState.isLoadingPresets
+                    !uiState.isLoadingPresets
                             && uiState.connectionState is ConnectionState.Connected -> {
                         Text(
                             text      = stringResource(R.string.no_presets),
@@ -124,7 +114,6 @@ fun ControlScreen(
                 }
             }
 
-            // ── Preset list ─────────────────────────────────────────────────
             items(uiState.presets, key = { it.id }) { preset ->
                 val isActive = preset.id == uiState.activePresetId
                 Chip(
@@ -138,25 +127,13 @@ fun ControlScreen(
                     },
                     onClick  = { onActivatePreset(preset.id) },
                     modifier = Modifier.fillMaxWidth(),
-                    // Active preset: tinted background + cyan border to make selection obvious
-                    // even in bright daylight on the watch screen.
-                    colors = if (isActive) {
-                        ChipDefaults.chipColors(backgroundColor = WledActiveChipBg)
-                    } else {
-                        ChipDefaults.secondaryChipColors()
-                    },
-                    border = if (isActive) {
-                        ChipDefaults.chipBorder(
-                            borderColor = WledCyan,
-                            borderWidth = 1.5.dp
-                        )
-                    } else {
-                        ChipDefaults.chipBorder()
-                    }
+                    colors   = if (isActive) ChipDefaults.chipColors(backgroundColor = WledActiveChipBg)
+                    else ChipDefaults.secondaryChipColors(),
+                    border   = if (isActive) ChipDefaults.chipBorder(borderStroke = BorderStroke(1.5.dp, WledCyan))
+                    else ChipDefaults.chipBorder()
                 )
             }
 
-            // ── Disconnect ──────────────────────────────────────────────────
             item {
                 Chip(
                     label    = { Text(stringResource(R.string.disconnect)) },

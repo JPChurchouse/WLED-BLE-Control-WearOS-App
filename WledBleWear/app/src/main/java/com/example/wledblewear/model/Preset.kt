@@ -1,4 +1,4 @@
-package com.jpchurchouse.wledble.model
+package com.jpchurchouse.wledblewear.model
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable

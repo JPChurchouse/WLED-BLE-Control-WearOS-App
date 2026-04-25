@@ -1,4 +1,4 @@
-package com.jpchurchouse.wledble.ble
+package com.jpchurchouse.wledblewear.ble
 
 import java.util.UUID
 

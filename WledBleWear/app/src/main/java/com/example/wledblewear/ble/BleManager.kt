@@ -1,4 +1,4 @@
-package com.jpchurchouse.wledble.ble
+package com.jpchurchouse.wledblewear.ble
 
 import android.annotation.SuppressLint
 import android.bluetooth.*
@@ -6,7 +6,7 @@ import android.bluetooth.le.*
 import android.content.Context
 import android.os.Build
 import android.util.Log
-import com.jpchurchouse.wledble.model.*
+import com.jpchurchouse.wledblewear.model.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.json.Json
@@ -361,7 +361,7 @@ class BleManager(private val context: Context) {
                 val jsonText = value.toString(Charsets.UTF_8)
                 Log.d(TAG, "Presets JSON (${value.size} bytes): $jsonText")
                 val presets = try {
-                    json.decodeFromString<List<com.jpchurchouse.wledble.model.Preset>>(jsonText)
+                    json.decodeFromString<List<com.jpchurchouse.wledblewear.model.Preset>>(jsonText)
                 } catch (e: Exception) {
                     Log.e(TAG, "Preset JSON parse error: ${e.message}")
                     emptyList()

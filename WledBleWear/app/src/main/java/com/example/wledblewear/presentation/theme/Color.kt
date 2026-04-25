@@ -1,4 +1,4 @@
-package com.jpchurchouse.wledble.presentation.theme
+package com.jpchurchouse.wledblewear.presentation.theme
 
 import androidx.compose.ui.graphics.Color
 

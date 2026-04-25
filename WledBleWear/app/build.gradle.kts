@@ -12,11 +12,11 @@ plugins {
 }
 
 android {
-    namespace   = "com.jpchurchouse.wledble"
+    namespace   = "com.jpchurchouse.wledblewear"
     compileSdk  = 35
 
     defaultConfig {
-        applicationId = "com.jpchurchouse.wledble"
+        applicationId = "com.jpchurchouse.wledblewear"
         minSdk        = 26
         targetSdk     = 35
         versionCode   = 1

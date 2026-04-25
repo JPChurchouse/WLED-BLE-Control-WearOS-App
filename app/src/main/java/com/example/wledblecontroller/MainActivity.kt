@@ -1,9 +1,11 @@
-package com.example.wledble
+package com.jpchurchouse.wledblewear
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
@@ -11,66 +13,46 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
-import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.wear.compose.navigation.SwipeDismissableNavHost
 import androidx.wear.compose.navigation.composable
 import androidx.wear.compose.navigation.rememberSwipeDismissableNavController
-import com.example.wledble.model.ConnectionState
-import com.example.wledble.presentation.screens.ControlScreen
-import com.example.wledble.presentation.screens.ScanScreen
-import com.example.wledble.presentation.theme.WledBleTheme
-import com.example.wledble.viewmodel.WledViewModel
+import com.jpchurchouse.wledblewear.model.ConnectionState
+import com.jpchurchouse.wledblewear.presentation.screens.ControlScreen
+import com.jpchurchouse.wledblewear.presentation.screens.ScanScreen
+import com.jpchurchouse.wledblewear.presentation.theme.WledBleTheme
+import com.jpchurchouse.wledblewear.viewmodel.WledViewModel
 
-/**
- * Single-activity WearOS app.
- *
- * Navigation graph:
- *   scan ──connect──▶ control
- *   control ──swipe-right──▶ scan   (also triggered by disconnect)
- *
- * SwipeDismissableNavHost provides the native swipe-to-go-back gesture.
- * All BLE permission logic lives here to keep Composables and ViewModel
- * framework-agnostic.
- */
-class MainActivity : FragmentActivity() {
+class MainActivity : ComponentActivity() {
 
     private val viewModel: WledViewModel by viewModels()
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { results ->
-        if (results.all { it.value }) {
+    ) { results: Map<String, Boolean> ->
+        if (results.values.all { granted -> granted }) {
             viewModel.startScan()
         }
-        // If denied, user sees idle scan screen with "Scan Again" button
-        // which re-triggers checkPermissionsAndScan() on tap.
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
+        handleTileCommand(intent?.getStringExtra(EXTRA_TILE_COMMAND))
 
         setContent {
             WledBleTheme {
                 val uiState by viewModel.uiState.collectAsStateWithLifecycle()
                 val navController = rememberSwipeDismissableNavController()
 
-                // Automatically navigate when connection state changes.
-                // LaunchedEffect key = connectionState class (not instance) so we
-                // don't re-navigate on every state data field update.
                 LaunchedEffect(uiState.connectionState::class) {
                     when (uiState.connectionState) {
                         is ConnectionState.Connected -> {
                             if (navController.currentDestination?.route != "control") {
-                                navController.navigate("control") {
-                                    // Keep scan on back-stack so swipe-right returns to it
-                                    launchSingleTop = true
-                                }
+                                navController.navigate("control") { launchSingleTop = true }
                             }
                         }
                         is ConnectionState.Disconnected -> {
-                            // Pop back to scan when explicitly disconnected
                             if (navController.currentDestination?.route == "control") {
                                 navController.popBackStack()
                             }
@@ -95,39 +77,48 @@ class MainActivity : FragmentActivity() {
                             uiState          = uiState,
                             onTogglePower    = { viewModel.togglePower() },
                             onActivatePreset = { viewModel.activatePreset(it) },
-                            onDisconnect     = {
-                                viewModel.disconnect()
-                                // NavController pop is driven by state above
-                            }
+                            onDisconnect     = { viewModel.disconnect() }
                         )
                     }
                 }
             }
         }
 
-        // Kick off scan immediately on first launch
         checkPermissionsAndScan()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleTileCommand(intent.getStringExtra(EXTRA_TILE_COMMAND))
+    }
+
+    private fun handleTileCommand(cmd: String?) {
+        when {
+            cmd == null                          -> return
+            cmd == CMD_TOGGLE_POWER              -> viewModel.togglePower()
+            cmd.startsWith(CMD_PRESET_PREFIX)    -> {
+                val id = cmd.removePrefix(CMD_PRESET_PREFIX).toIntOrNull() ?: return
+                viewModel.activatePreset(id)
+            }
+        }
     }
 
     private fun checkPermissionsAndScan() {
         val required = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            arrayOf(
-                Manifest.permission.BLUETOOTH_SCAN,
-                Manifest.permission.BLUETOOTH_CONNECT
-            )
+            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
         } else {
-            // API 26–30: location required for BLE scan results
             arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
         }
-
         val missing = required.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
+        if (missing.isEmpty()) viewModel.startScan()
+        else permissionLauncher.launch(missing.toTypedArray())
+    }
 
-        if (missing.isEmpty()) {
-            viewModel.startScan()
-        } else {
-            permissionLauncher.launch(missing.toTypedArray())
-        }
+    companion object {
+        const val EXTRA_TILE_COMMAND = "tile_cmd"
+        const val CMD_TOGGLE_POWER   = "pwr"
+        const val CMD_PRESET_PREFIX  = "pre:"
     }
 }
