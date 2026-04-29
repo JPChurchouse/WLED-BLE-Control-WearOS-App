@@ -1,2 +1,5 @@
 Redo encryption thing
 & "C:\Program Files\Android\Android Studio\jbr\bin\keytool.exe" -genkey -v -keystore wled-ble-release.keystore -alias wled-ble -keyalg RSA -keysize 2048 -validity 10000
+
+
+./gradlew clean bundleRelease
