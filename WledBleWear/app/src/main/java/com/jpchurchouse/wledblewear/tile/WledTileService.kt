@@ -1,193 +1,209 @@
 package com.jpchurchouse.wledblewear.tile
 
-import androidx.datastore.preferences.core.Preferences
-import androidx.wear.protolayout.ActionBuilders.*
+import androidx.concurrent.futures.ResolvableFuture
+import androidx.wear.protolayout.ActionBuilders
 import androidx.wear.protolayout.ColorBuilders.argb
-import androidx.wear.protolayout.DeviceParametersBuilders
-import androidx.wear.protolayout.LayoutElementBuilders
-import androidx.wear.protolayout.LayoutElementBuilders.LayoutElement
-import androidx.wear.protolayout.ModifiersBuilders.Clickable
-import androidx.wear.protolayout.ResourceBuilders
-import androidx.wear.protolayout.TimelineBuilders.*
-import androidx.wear.protolayout.material.Button
-import androidx.wear.protolayout.material.ButtonColors
+import androidx.wear.protolayout.LayoutElementBuilders.*
+import androidx.wear.protolayout.ModifiersBuilders
+import androidx.wear.tiles.ResourceBuilders
+import androidx.wear.protolayout.TimelineBuilders
 import androidx.wear.protolayout.material.CompactChip
 import androidx.wear.protolayout.material.Text
 import androidx.wear.protolayout.material.Typography
-import androidx.wear.protolayout.material.layouts.MultiButtonLayout
 import androidx.wear.protolayout.material.layouts.PrimaryLayout
-import androidx.wear.tiles.EventBuilders
 import androidx.wear.tiles.RequestBuilders
-import androidx.wear.tiles.SuspendingTileService
-import androidx.wear.tiles.TileBuilders.Tile
+import androidx.wear.tiles.TileBuilders
 import androidx.wear.tiles.TileService
+import com.google.common.util.concurrent.ListenableFuture
+import com.jpchurchouse.wledblewear.EXTRA_TILE_COMMAND
 import com.jpchurchouse.wledblewear.MainActivity
-import com.jpchurchouse.wledblewear.WledApplication
-import com.jpchurchouse.wledblewear.data.PreferencesKeys
+import com.jpchurchouse.wledblewear.data.WledPreferences
 import com.jpchurchouse.wledblewear.data.wledDataStore
-import com.jpchurchouse.wledblewear.model.ConnectionState
-import com.jpchurchouse.wledblewear.model.Preset
 import kotlinx.coroutines.flow.first
-import kotlinx.serialization.json.Json
+import kotlinx.coroutines.runBlocking
 
 /**
- * Tile buttons use [LaunchAction] → [MainActivity] with an Intent extra.
- * This avoids the protolayout DynamicDataValue type-argument complexity
- * while being a fully supported WearOS pattern. MainActivity reads the
- * extra, executes the BLE command via the shared BleManager, and proceeds
- * to the control screen as normal.
+ * WledTileService — glanceable WLED control surface.
+ *
+ * Extends TileService (Java base class); returns ListenableFuture via ResolvableFuture
+ * from androidx.concurrent:concurrent-futures.  onTileRequest runs on TileService's own
+ * background executor — runBlocking on a single DataStore read is safe here.
+ *
+ * All interactions use LaunchAction → MainActivity with EXTRA_TILE_COMMAND.
+ * The tile never touches BLE; it reads DataStore for display state.
+ *
+ * Layout (round 192dp screen):
+ *   PrimaryLayout
+ *     ├── primaryLabel : "● DeviceName"  (green)
+ *     ├── Column of CompactChips : [PWR] [P1] [P2] [P3]
+ *     └── bottom chip  : "Open App"
+ *
+ * CompactChip is used for all interactive elements — it has a stable, simple API in
+ * protolayout-material 1.2.x.  Button / ButtonDefaults are avoided because their
+ * constant names differ across minor versions.
  */
-class WledTileService : SuspendingTileService() {
+class WledTileService : TileService() {
 
-    private val bleManager get() = (application as WledApplication).bleManager
-    private val json = Json { ignoreUnknownKeys = true }
+    // ── TileService overrides ─────────────────────────────────────────────────
 
-    companion object {
-        private const val RESOURCES_VERSION = "1"
+    override fun onTileRequest(
+        requestParams: RequestBuilders.TileRequest,
+    ): ListenableFuture<TileBuilders.Tile> {
+        val future = ResolvableFuture.create<TileBuilders.Tile>()
+        try {
+            future.set(buildTile())
+        } catch (e: Exception) {
+            future.setException(e)
+        }
+        return future
     }
 
-    override suspend fun onTileRequest(
-        requestParams: RequestBuilders.TileRequest
-    ): Tile {
-        val prefs = applicationContext.wledDataStore.data.first()
+    override fun onResourcesRequest(
+        requestParams: RequestBuilders.ResourcesRequest,
+    ): ListenableFuture<ResourceBuilders.Resources> {
+        val future = ResolvableFuture.create<ResourceBuilders.Resources>()
+        future.set(ResourceBuilders.Resources.Builder().setVersion("1").build())
+        return future
+    }
 
-        return Tile.Builder()
-            .setResourcesVersion(RESOURCES_VERSION)
-            .setTileTimeline(
-                Timeline.Builder()
-                    .addTimelineEntry(
-                        TimelineEntry.Builder()
-                            .setLayout(
-                                androidx.wear.protolayout.LayoutElementBuilders.Layout.Builder()
-                                    .setRoot(buildLayout(prefs, requestParams.deviceConfiguration))
-                                    .build()
-                            )
-                            .build()
-                    )
+    // ── Tile builder ──────────────────────────────────────────────────────────
+
+    private fun buildTile(): TileBuilders.Tile {
+        val prefs = runBlocking { applicationContext.wledDataStore.data.first() }
+
+        val deviceName    = prefs[WledPreferences.DEVICE_NAME]
+        val deviceAddress = prefs[WledPreferences.DEVICE_ADDRESS]
+        val recentPresets = prefs[WledPreferences.RECENT_PRESETS]
+            ?.split(",")
+            ?.mapNotNull { it.trim().toIntOrNull() }
+            ?.take(3)
+            ?: emptyList()
+
+        val layout = if (deviceAddress == null) buildNoDeviceLayout()
+                     else buildControlLayout(deviceName ?: "WLED", recentPresets)
+
+        return TileBuilders.Tile.Builder()
+            .setResourcesVersion("1")
+            .setTileTimeline(TimelineBuilders.Timeline.fromLayoutElement(layout))
+            .build()
+    }
+
+    // ── Layout builders ───────────────────────────────────────────────────────
+
+    private fun buildNoDeviceLayout(): LayoutElement {
+        val params = defaultDeviceParams()
+        return PrimaryLayout.Builder(params)
+            .setContent(
+                Text.Builder(this, "Open app\nto connect")
+                    .setTypography(Typography.TYPOGRAPHY_CAPTION1)
+                    .setColor(argb(0xFFAAAAAA.toInt()))
+                    .setMultilineAlignment(TEXT_ALIGN_CENTER)
                     .build()
+            )
+            .setPrimaryChipContent(
+                CompactChip.Builder(
+                    this, "Open App",
+                    clickable(openAppAction()),
+                    params,
+                ).build()
             )
             .build()
     }
 
-    override suspend fun onResourcesRequest(
-        requestParams: RequestBuilders.ResourcesRequest
-    ): ResourceBuilders.Resources =
-        ResourceBuilders.Resources.Builder()
-            .setVersion(RESOURCES_VERSION)
-            .build()
-
-    override fun onTileEnterEvent(requestParams: EventBuilders.TileEnterEvent) {
-        TileService.getUpdater(this).requestUpdate(WledTileService::class.java)
-    }
-
-    private fun buildLayout(
-        prefs: Preferences,
-        deviceParams: DeviceParametersBuilders.DeviceParameters
+    private fun buildControlLayout(
+        deviceName: String,
+        recentPresets: List<Int>,
     ): LayoutElement {
-        val deviceName      = prefs[PreferencesKeys.DEVICE_NAME] ?: "WLED BLE"
-        val isPowered       = prefs[PreferencesKeys.IS_POWERED]  ?: false
-        val activePreset    = prefs[PreferencesKeys.ACTIVE_PRESET]
-        val presets         = parsePresets(prefs[PreferencesKeys.PRESETS_JSON])
-        val hasPairedDevice = prefs[PreferencesKeys.DEVICE_MAC] != null
-        val isConnected     = bleManager.state.value.connectionState is ConnectionState.Connected
+        val params = defaultDeviceParams()
 
-        val openAppChip = CompactChip.Builder(
-            this, "Open App",
-            buildLaunchClickable("open_app", null),
-            deviceParams
-        ).build()
+        // Build a column of compact chips: Power + up to 3 preset shortcuts
+        val columnBuilder = Column.Builder()
+            .setHorizontalAlignment(HORIZONTAL_ALIGN_CENTER)
+            .addContent(
+                CompactChip.Builder(
+                    this, "Power",
+                    clickable(tileCommandAction("pwr")),
+                    params,
+                ).build()
+            )
 
-        if (!hasPairedDevice) {
-            return PrimaryLayout.Builder(deviceParams)
-                .setPrimaryLabelTextContent(
-                    Text.Builder(this, "WLED BLE")
-                        .setTypography(Typography.TYPOGRAPHY_CAPTION1)
-                        .setColor(argb(0xFFFFFFFF.toInt()))
-                        .build()
-                )
-                .setContent(
-                    Text.Builder(this, "Open app to connect")
-                        .setTypography(Typography.TYPOGRAPHY_BODY2)
-                        .setColor(argb(0xFFAAAAAA.toInt()))
-                        .setMultilineAlignment(LayoutElementBuilders.TEXT_ALIGN_CENTER)
-                        .build()
-                )
-                .setPrimaryChipContent(openAppChip)
-                .build()
+        recentPresets.forEach { id ->
+            columnBuilder.addContent(
+                CompactChip.Builder(
+                    this, "Preset $id",
+                    clickable(tileCommandAction("pre:$id")),
+                    params,
+                ).build()
+            )
         }
 
-        val dotColor = if (isConnected) 0xFF4CAF50.toInt() else 0xFF888888.toInt()
-        val titleLabel = Text.Builder(this, "${if (isConnected) "●" else "○"} $deviceName")
-            .setTypography(Typography.TYPOGRAPHY_CAPTION1)
-            .setColor(argb(dotColor))
+        return PrimaryLayout.Builder(params)
+            .setPrimaryLabelTextContent(
+                Text.Builder(this, "● $deviceName")
+                    .setTypography(Typography.TYPOGRAPHY_CAPTION1)
+                    .setColor(argb(0xFF4CAF50.toInt()))
+                    .build()
+            )
+            .setContent(columnBuilder.build())
+            .setPrimaryChipContent(
+                CompactChip.Builder(
+                    this, "Open App",
+                    clickable(openAppAction()),
+                    params,
+                ).build()
+            )
+            .build()
+    }
+
+    // ── Action / Clickable helpers ────────────────────────────────────────────
+
+    /**
+     * Wraps an Action in a Clickable.
+     * CompactChip.Builder (and Button.Builder) take Clickable as their second arg,
+     * not Action directly.
+     */
+    private fun clickable(action: ActionBuilders.Action): ModifiersBuilders.Clickable =
+        ModifiersBuilders.Clickable.Builder()
+            .setOnClick(action)
             .build()
 
-        val multiButton = MultiButtonLayout.Builder()
-
-        multiButton.addButtonContent(
-            Button.Builder(this, buildLaunchClickable("pwr", MainActivity.CMD_TOGGLE_POWER))
-                .setTextContent(if (isPowered) "ON" else "OFF")
-                .setButtonColors(
-                    if (isPowered)
-                        ButtonColors(argb(0xFF00E5FF.toInt()), argb(0xFF000000.toInt()))
-                    else
-                        ButtonColors(argb(0xFF2C2C2C.toInt()), argb(0xFFFFFFFF.toInt()))
-                )
-                .build()
-        )
-
-        presets.take(3).forEach { preset ->
-            val isActive = preset.id == activePreset
-            multiButton.addButtonContent(
-                Button.Builder(
-                    this,
-                    buildLaunchClickable(
-                        "pre_${preset.id}",
-                        "${MainActivity.CMD_PRESET_PREFIX}${preset.id}"
-                    )
-                )
-                    .setTextContent(preset.name.take(4))
-                    .setButtonColors(
-                        if (isActive)
-                            ButtonColors(argb(0xFFFF8F00.toInt()), argb(0xFF000000.toInt()))
-                        else
-                            ButtonColors(argb(0xFF2C2C2C.toInt()), argb(0xFFFFFFFF.toInt()))
+    private fun tileCommandAction(cmd: String): ActionBuilders.Action =
+        ActionBuilders.LaunchAction.Builder()
+            .setAndroidActivity(
+                ActionBuilders.AndroidActivity.Builder()
+                    .setPackageName(packageName)
+                    .setClassName(MainActivity::class.java.name)
+                    .addKeyToExtraMapping(
+                        EXTRA_TILE_COMMAND,
+                        ActionBuilders.AndroidStringExtra.Builder().setValue(cmd).build()
                     )
                     .build()
             )
-        }
-
-        return PrimaryLayout.Builder(deviceParams)
-            .setPrimaryLabelTextContent(titleLabel)
-            .setContent(multiButton.build())
-            .setPrimaryChipContent(openAppChip)
             .build()
-    }
 
-    private fun buildLaunchClickable(id: String, cmd: String?): Clickable {
-        val activityBuilder = AndroidActivity.Builder()
-            .setPackageName(packageName)
-            .setClassName("$packageName.MainActivity")
-
-        if (cmd != null) {
-            activityBuilder.addKeyToExtraMapping(
-                MainActivity.EXTRA_TILE_COMMAND,
-                AndroidIntentExtra.Builder().setStringValue(cmd).build()
-            )
-        }
-
-        return Clickable.Builder()
-            .setId(id)
-            .setOnClick(
-                LaunchAction.Builder()
-                    .setAndroidActivity(activityBuilder.build())
+    private fun openAppAction(): ActionBuilders.Action =
+        ActionBuilders.LaunchAction.Builder()
+            .setAndroidActivity(
+                ActionBuilders.AndroidActivity.Builder()
+                    .setPackageName(packageName)
+                    .setClassName(MainActivity::class.java.name)
                     .build()
             )
             .build()
-    }
 
-    private fun parsePresets(jsonStr: String?): List<Preset> {
-        if (jsonStr.isNullOrBlank()) return emptyList()
-        return try { json.decodeFromString<List<Preset>>(jsonStr) } catch (e: Exception) { emptyList() }
-    }
+    // ── Device parameters ─────────────────────────────────────────────────────
+
+    /**
+     * Static 192×192 round defaults — TileRequest.deviceParameters is nullable in
+     * protolayout 1.2.x so we use fixed values rather than risk a null crash.
+     */
+    private fun defaultDeviceParams() =
+        androidx.wear.protolayout.DeviceParametersBuilders.DeviceParameters.Builder()
+            .setScreenWidthDp(192)
+            .setScreenHeightDp(192)
+            .setScreenDensity(2.0f)
+            .setScreenShape(
+                androidx.wear.protolayout.DeviceParametersBuilders.SCREEN_SHAPE_ROUND
+            )
+            .build()
 }

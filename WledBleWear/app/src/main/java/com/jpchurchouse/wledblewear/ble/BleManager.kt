@@ -2,498 +2,433 @@ package com.jpchurchouse.wledblewear.ble
 
 import android.annotation.SuppressLint
 import android.bluetooth.*
-import android.bluetooth.le.*
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
+import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.os.Build
+import android.os.ParcelUuid
 import android.util.Log
-import com.jpchurchouse.wledblewear.model.*
+import com.jpchurchouse.wledblewear.model.ConnectionState
+import com.jpchurchouse.wledblewear.model.Preset
+import com.jpchurchouse.wledblewear.model.ScannedDevice
+import com.jpchurchouse.wledblewear.model.WledUiState
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import java.util.UUID
-
-private const val TAG = "BleManager"
+import kotlin.math.min
 
 /**
- * All BLE logic: scan → connect → GATT setup chain → notify handling → reconnect.
+ * Single source of truth for all BLE operations.
  *
- * Caller contract: the Activity/ViewModel must obtain required BLE permissions
- * (BLUETOOTH_SCAN + BLUETOOTH_CONNECT on API 31+, ACCESS_FINE_LOCATION on API <31)
- * before calling [startScan] or [connect].
+ * Lifecycle: created once in WledApplication and held for the lifetime of the process.
+ * Do NOT call cleanup() from ViewModel.onCleared() — the tile interacts with BLE state
+ * independently of any ViewModel lifecycle.
  *
- * Thread safety: GATT callbacks arrive on a Bluetooth binder thread.
- * [_state].update() is atomic (CAS under the hood); all other mutable state
- * is accessed only from the callback thread in the strictly sequential
- * GATT setup chain, so no additional locking is required there.
+ * Threading: all GATT operations are dispatched on Dispatchers.Main (required by the
+ * Android BLE stack).  Callbacks arrive on the main thread; coroutines suspend without
+ * blocking it.
  */
 @SuppressLint("MissingPermission")
 class BleManager(private val context: Context) {
 
-    // ── Bluetooth handles ───────────────────────────────────────────────────
+    private val tag = "BleManager"
+
+    // ── Public state ──────────────────────────────────────────────────────────
+
+    private val _uiState = MutableStateFlow(WledUiState())
+    val uiState: StateFlow<WledUiState> = _uiState.asStateFlow()
+
+    // ── Internals ─────────────────────────────────────────────────────────────
+
+    /** All coroutines dispatched on Main so connectGatt / scan calls are safe. */
+    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+
     private val bluetoothManager =
         context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-    private val bluetoothAdapter: BluetoothAdapter
-        get() = bluetoothManager.adapter
+    private val bluetoothAdapter get() = bluetoothManager.adapter
+    private val leScanner       get() = bluetoothAdapter.bluetoothLeScanner
 
-    // ── Coroutine scope for reconnect scheduling ────────────────────────────
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var scanCallback: ScanCallback? = null
+    private var bluetoothGatt: BluetoothGatt? = null
 
-    // ── State exposed to ViewModel ──────────────────────────────────────────
-    private val _state = MutableStateFlow(WledUiState())
-    val state: StateFlow<WledUiState> = _state.asStateFlow()
+    /** Device we last asked to connect to; drives automatic reconnection. */
+    private var savedDevice: ScannedDevice? = null
 
-    // ── GATT handle — written/read only on the BT callback thread ──────────
-    @Volatile private var gatt: BluetoothGatt? = null
-
-    // ── Cached characteristic references set during service discovery ───────
-    @Volatile private var powerChar       : BluetoothGattCharacteristic? = null
-    @Volatile private var presetsChar     : BluetoothGattCharacteristic? = null
-    @Volatile private var activePresetChar: BluetoothGattCharacteristic? = null
-
-    // ── Reconnect tracking ──────────────────────────────────────────────────
-    /** Non-null only while we still want to (re)connect to this device. */
-    @Volatile private var targetDevice: BluetoothDevice? = null
+    /** True while the reconnect loop is running; prevents re-entrant scheduling. */
+    @Volatile private var isReconnecting = false
     private var reconnectJob: Job? = null
-    @Volatile private var reconnectAttempts = 0
+
+    // ── GATT operation serialisation ──────────────────────────────────────────
 
     /**
-     * Explicit setup-phase enum prevents executing a step twice if a
-     * callback fires unexpectedly (e.g. device reconnects mid-setup).
+     * Mutex ensures only one GATT operation is in-flight at a time.
+     * Within each withLock block we set [pendingDeferred] before triggering
+     * the BLE call so the callback always sees a non-null target.
      */
-    private enum class SetupPhase {
-        IDLE,
-        MTU_REQUESTED,
-        READING_PRESETS,
-        ENABLING_POWER_NOTIFY,
-        ENABLING_PRESET_NOTIFY,
-        READING_INITIAL_POWER,
-        COMPLETE
-    }
-    @Volatile private var setupPhase = SetupPhase.IDLE
-
-    // ── lenient JSON parser — tolerates extra fields from future firmware ───
-    private val json = Json { ignoreUnknownKeys = true }
-
-    // ────────────────────────────────────────────────────────────────────────
-    // Public API
-    // ────────────────────────────────────────────────────────────────────────
+    private val gattMutex = Mutex()
 
     /**
-     * Start BLE scan filtered by the WLED service UUID.
-     * Only devices that include [BleConstants.SERVICE_UUID] in their
-     * advertising payload will surface — ensure the NimBLE usermod calls
-     * NimBLEAdvertising::addServiceUUID() before advertising.
+     * Completed by the appropriate [BluetoothGattCallback] override.
+     * Null result means the operation failed or timed out.
      */
+    @Volatile private var pendingDeferred: CompletableDeferred<ByteArray?>? = null
+
+    // ── Scan ─────────────────────────────────────────────────────────────────
+
     fun startScan() {
-        stopScan()
-        val scanner = bluetoothAdapter.bluetoothLeScanner ?: run {
-            updateError("BLE not available / Bluetooth off")
-            return
-        }
-        _state.update { it.copy(connectionState = ConnectionState.Scanning, scanResults = emptyList()) }
-
+        _uiState.update { it.copy(connectionState = ConnectionState.Scanning, scannedDevices = emptyList()) }
         val filter = ScanFilter.Builder()
-            .setServiceUuid(android.os.ParcelUuid(BleConstants.SERVICE_UUID))
+            .setServiceUuid(ParcelUuid(UUID.fromString(BleConstants.SERVICE_UUID)))
             .build()
-
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
+        scanCallback = object : ScanCallback() {
+            override fun onScanResult(callbackType: Int, result: ScanResult) {
+                val name = result.scanRecord?.deviceName
+                    ?: result.device.name
+                    ?: "Unknown (${result.device.address.takeLast(5)})"
+                val found = ScannedDevice(address = result.device.address, name = name)
+                _uiState.update { state ->
+                    if (state.scannedDevices.any { it.address == found.address }) state
+                    else state.copy(scannedDevices = state.scannedDevices + found)
+                }
+            }
 
-        scanner.startScan(listOf(filter), settings, scanCallback)
+            override fun onScanFailed(errorCode: Int) {
+                Log.e(tag, "Scan failed: errorCode=$errorCode")
+                _uiState.update { it.copy(connectionState = ConnectionState.Idle) }
+            }
+        }
+        leScanner.startScan(listOf(filter), settings, scanCallback!!)
+        Log.d(tag, "Scan started")
     }
 
     fun stopScan() {
-        bluetoothAdapter.bluetoothLeScanner?.stopScan(scanCallback)
+        scanCallback?.let { leScanner.stopScan(it) }
+        scanCallback = null
+        Log.d(tag, "Scan stopped")
     }
 
-    /**
-     * Connect to [device]. Cancels any in-progress reconnect loop and resets
-     * the reconnect counter so backoff starts fresh.
-     */
-    fun connect(device: BluetoothDevice) {
+    // ── Connect / disconnect ──────────────────────────────────────────────────
+
+    fun connect(device: ScannedDevice) {
         stopScan()
+        savedDevice = device
         reconnectJob?.cancel()
-        reconnectJob = null
-        targetDevice = device
-        reconnectAttempts = 0
-        _state.update { it.copy(connectionState = ConnectionState.Connecting) }
-        doConnect(device)
+        isReconnecting = false
+        _uiState.update { it.copy(connectedDeviceName = device.name) }
+        doConnect(device.address)
     }
 
-    /**
-     * Explicit user-initiated disconnect. Clears [targetDevice] to suppress
-     * the automatic reconnect that would otherwise trigger from the callback.
-     */
+    /** Close current GATT and stop any pending reconnect. */
     fun disconnect() {
         reconnectJob?.cancel()
-        reconnectJob = null
-        targetDevice = null          // prevents reconnect logic from firing
-        gatt?.disconnect()           // → onConnectionStateChange(DISCONNECTED)
-    }
-
-    /** Toggle LED power. Fire-and-forget — state update arrives via notify. */
-    fun writePower(on: Boolean) {
-        val g = gatt ?: return
-        val c = powerChar ?: return
-        writeCharacteristic(g, c, byteArrayOf(if (on) 0x01 else 0x00))
-    }
-
-    /**
-     * Activate preset by ID. Fire-and-forget — active preset notify
-     * confirms the change. [id] must be 1–250.
-     */
-    fun writeActivePreset(id: Int) {
-        require(id in 1..250) { "Preset id out of range: $id" }
-        val g = gatt ?: return
-        val c = activePresetChar ?: return
-        writeCharacteristic(g, c, byteArrayOf(id.toByte()))
-    }
-
-    /** Call from ViewModel.onCleared() to release all resources. */
-    fun cleanup() {
-        scope.cancel()
-        gatt?.close()
-        gatt = null
-    }
-
-    // ────────────────────────────────────────────────────────────────────────
-    // Scan callback
-    // ────────────────────────────────────────────────────────────────────────
-
-    private val scanCallback = object : ScanCallback() {
-        override fun onScanResult(callbackType: Int, result: ScanResult) {
-            val address = result.device.address
-            val existing = _state.value.scanResults
-            if (existing.any { it.address == address }) return   // de-duplicate
-
-            val displayName = result.device.name
-                ?.takeIf { it.isNotBlank() }
-                ?: "Unknown (…${address.takeLast(5)})"
-
-            val scanned = ScannedDevice(
-                name    = displayName,
-                address = address,
-                device  = result.device
+        savedDevice = null
+        isReconnecting = false
+        pendingDeferred?.complete(null)
+        bluetoothGatt?.close()
+        bluetoothGatt = null
+        _uiState.update {
+            it.copy(
+                connectionState = ConnectionState.Idle,
+                connectedDeviceName = null,
             )
-            _state.update { it.copy(scanResults = existing + scanned) }
         }
-
-        override fun onScanFailed(errorCode: Int) {
-            Log.e(TAG, "Scan failed: errorCode=$errorCode")
-            updateError("Scan failed (code $errorCode). Is Bluetooth on?")
-        }
+        Log.d(tag, "Disconnected by user request")
     }
 
-    // ────────────────────────────────────────────────────────────────────────
-    // GATT callback — implements the sequential setup chain
-    // ────────────────────────────────────────────────────────────────────────
+    /** Called from WledApplication.onTerminate() only. */
+    fun cleanup() {
+        disconnect()
+        scope.cancel()
+    }
+
+    private fun doConnect(address: String) {
+        _uiState.update { it.copy(connectionState = ConnectionState.Connecting) }
+        val device = bluetoothAdapter.getRemoteDevice(address)
+        bluetoothGatt?.close()
+        bluetoothGatt = device.connectGatt(
+            context, false, gattCallback, BluetoothDevice.TRANSPORT_LE
+        )
+        Log.d(tag, "connectGatt → $address")
+    }
+
+    // ── GATT callback ─────────────────────────────────────────────────────────
 
     private val gattCallback = object : BluetoothGattCallback() {
 
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
-            Log.d(TAG, "onConnectionStateChange status=$status newState=$newState")
-            when (newState) {
-                BluetoothProfile.STATE_CONNECTED -> {
-                    Log.i(TAG, "GATT connected, discovering services…")
-                    reconnectAttempts = 0
-                    setupPhase = SetupPhase.IDLE
-                    _state.update { it.copy(connectionState = ConnectionState.Connecting) }
-                    gatt.discoverServices()
-                }
-                BluetoothProfile.STATE_DISCONNECTED -> {
-                    Log.i(TAG, "GATT disconnected (status=$status)")
-                    clearCharacteristicCache()
-                    _state.update {
-                        it.copy(
-                            connectionState  = ConnectionState.Disconnected,
-                            isPowered        = false,
-                            presets          = emptyList(),
-                            activePresetId   = null,
-                            isLoadingPresets = false
-                        )
-                    }
-                    gatt.close()
-                    this@BleManager.gatt = null
-                    // Only auto-reconnect if the user hasn't explicitly disconnected
-                    targetDevice?.let { scheduleReconnect(it) }
-                }
+            Log.d(tag, "onConnectionStateChange: newState=$newState status=$status")
+            if (newState == BluetoothProfile.STATE_CONNECTED) {
+                gatt.discoverServices()
+            } else {
+                // Unblock any in-flight GATT op so the coroutine doesn't hang
+                pendingDeferred?.complete(null)
+                handleDisconnect()
             }
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                Log.e(TAG, "Service discovery failed: $status")
-                gatt.disconnect(); return
+            Log.d(tag, "onServicesDiscovered: status=$status")
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                scope.launch { runSetupChain(gatt) }
+            } else {
+                handleDisconnect()
             }
-            val service = gatt.getService(BleConstants.SERVICE_UUID) ?: run {
-                Log.e(TAG, "WLED service not found — check UUID and firmware advertising")
-                updateError("WLED BLE service not found")
-                gatt.disconnect(); return
-            }
-
-            fun getChar(uuid: UUID, label: String): BluetoothGattCharacteristic? =
-                service.getCharacteristic(uuid).also {
-                    if (it == null) Log.e(TAG, "Missing characteristic: $label ($uuid)")
-                }
-
-            powerChar        = getChar(BleConstants.POWER_CHAR_UUID,        "Power")
-            presetsChar      = getChar(BleConstants.PRESETS_CHAR_UUID,      "Presets")
-            activePresetChar = getChar(BleConstants.ACTIVE_PRESET_CHAR_UUID, "ActivePreset")
-
-            if (powerChar == null || presetsChar == null || activePresetChar == null) {
-                updateError("Required BLE characteristics missing")
-                gatt.disconnect(); return
-            }
-
-            // Negotiate MTU to support preset JSON larger than default 23-byte ATT payload.
-            // Android's BLE stack handles ATT fragmentation (Long Read / Read Blob) automatically,
-            // so onCharacteristicRead always delivers the complete value regardless of size.
-            setupPhase = SetupPhase.MTU_REQUESTED
-            gatt.requestMtu(BleConstants.REQUESTED_MTU)
         }
 
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
-            Log.d(TAG, "MTU negotiated to $mtu (status=$status)")
-            // Proceed regardless of status — fallback MTU is still usable.
-            if (setupPhase == SetupPhase.MTU_REQUESTED) {
-                setupPhase = SetupPhase.READING_PRESETS
-                _state.update { it.copy(isLoadingPresets = true) }
-                gatt.readCharacteristic(presetsChar!!)
-            }
+            Log.d(tag, "MTU → $mtu (status=$status)")
+            pendingDeferred?.complete(byteArrayOf(status.toByte()))
         }
 
-        // ── Read callbacks — handle both API variants ──────────────────────
-
-        /**
-         * Called on API < 33 (Tiramisu). On API 33+ this is NOT called;
-         * the four-parameter override below is called instead.
-         */
-        @Deprecated("Use the 4-param override on API 33+")
+        // ── Read (API < 33) ──────────────────────────────────────────────────
         @Suppress("DEPRECATION")
         override fun onCharacteristicRead(
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
-            status: Int
+            status: Int,
         ) {
-            handleCharacteristicRead(
-                gatt, characteristic,
-                characteristic.value ?: byteArrayOf(),
-                status
-            )
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                val value = if (status == BluetoothGatt.GATT_SUCCESS) characteristic.value else null
+                pendingDeferred?.complete(value)
+            }
         }
 
-        /** Called on API 33+ (Tiramisu) exclusively. */
+        // ── Read (API 33+) ───────────────────────────────────────────────────
         override fun onCharacteristicRead(
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray,
-            status: Int
+            status: Int,
         ) {
-            handleCharacteristicRead(gatt, characteristic, value, status)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                pendingDeferred?.complete(if (status == BluetoothGatt.GATT_SUCCESS) value else null)
+            }
         }
 
-        // ── Descriptor write callback (CCCD enables) ──────────────────────
+        override fun onCharacteristicWrite(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            status: Int,
+        ) {
+            pendingDeferred?.complete(byteArrayOf(status.toByte()))
+        }
 
         override fun onDescriptorWrite(
             gatt: BluetoothGatt,
             descriptor: BluetoothGattDescriptor,
-            status: Int
+            status: Int,
         ) {
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                Log.e(TAG, "Descriptor write failed: $status on ${descriptor.characteristic.uuid}")
-                return
-            }
-            when (descriptor.characteristic.uuid) {
-                BleConstants.POWER_CHAR_UUID -> {
-                    if (setupPhase == SetupPhase.ENABLING_POWER_NOTIFY) {
-                        Log.d(TAG, "Power notifications enabled, enabling preset notifications…")
-                        setupPhase = SetupPhase.ENABLING_PRESET_NOTIFY
-                        enableNotifications(gatt, activePresetChar!!)
-                    }
-                }
-                BleConstants.ACTIVE_PRESET_CHAR_UUID -> {
-                    if (setupPhase == SetupPhase.ENABLING_PRESET_NOTIFY) {
-                        Log.d(TAG, "ActivePreset notifications enabled, reading initial power…")
-                        setupPhase = SetupPhase.READING_INITIAL_POWER
-                        gatt.readCharacteristic(powerChar!!)
-                    }
-                }
-            }
+            pendingDeferred?.complete(byteArrayOf(status.toByte()))
         }
 
-        // ── Notify callbacks — handle both API variants ───────────────────
-
-        @Deprecated("Use the 3-param override on API 33+")
+        // ── Notify (API < 33) ────────────────────────────────────────────────
         @Suppress("DEPRECATION")
         override fun onCharacteristicChanged(
             gatt: BluetoothGatt,
-            characteristic: BluetoothGattCharacteristic
+            characteristic: BluetoothGattCharacteristic,
         ) {
-            handleCharacteristicChanged(characteristic.uuid, characteristic.value ?: byteArrayOf())
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                dispatchNotify(characteristic.uuid, characteristic.value ?: return)
+            }
         }
 
+        // ── Notify (API 33+) ─────────────────────────────────────────────────
         override fun onCharacteristicChanged(
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
-            value: ByteArray
+            value: ByteArray,
         ) {
-            handleCharacteristicChanged(characteristic.uuid, value)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                dispatchNotify(characteristic.uuid, value)
+            }
         }
-    } // end gattCallback
+    }
 
-    // ────────────────────────────────────────────────────────────────────────
-    // Shared handlers (called from both API-version overrides above)
-    // ────────────────────────────────────────────────────────────────────────
+    // ── GATT setup chain ──────────────────────────────────────────────────────
 
-    private fun handleCharacteristicRead(
-        gatt: BluetoothGatt,
-        characteristic: BluetoothGattCharacteristic,
-        value: ByteArray,
-        status: Int
-    ) {
-        if (status != BluetoothGatt.GATT_SUCCESS) {
-            Log.e(TAG, "Read failed: status=$status uuid=${characteristic.uuid}")
+    private suspend fun runSetupChain(gatt: BluetoothGatt) {
+        val service = gatt.getService(UUID.fromString(BleConstants.SERVICE_UUID))
+        if (service == null) {
+            Log.e(tag, "Service UUID not found after discovery — disconnecting")
+            handleDisconnect()
             return
         }
-        when (characteristic.uuid) {
-            BleConstants.PRESETS_CHAR_UUID -> {
-                val jsonText = value.toString(Charsets.UTF_8)
-                Log.d(TAG, "Presets JSON (${value.size} bytes): $jsonText")
-                val presets = try {
-                    json.decodeFromString<List<com.jpchurchouse.wledblewear.model.Preset>>(jsonText)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Preset JSON parse error: ${e.message}")
-                    emptyList()
-                }
-                _state.update { it.copy(presets = presets, isLoadingPresets = false) }
 
-                // Next: enable notifications on Power characteristic
-                if (setupPhase == SetupPhase.READING_PRESETS) {
-                    setupPhase = SetupPhase.ENABLING_POWER_NOTIFY
-                    enableNotifications(gatt, powerChar!!)
-                }
-            }
-            BleConstants.POWER_CHAR_UUID -> {
-                val powered = value.firstOrNull() == 0x01.toByte()
-                _state.update { it.copy(isPowered = powered) }
+        val powerChar       = service.getCharacteristic(UUID.fromString(BleConstants.CHAR_POWER_UUID))
+        val presetsChar     = service.getCharacteristic(UUID.fromString(BleConstants.CHAR_PRESETS_UUID))
+        val activePresetChar = service.getCharacteristic(UUID.fromString(BleConstants.CHAR_ACTIVE_PRESET_UUID))
 
-                // Final step — mark setup complete and surface Connected state
-                if (setupPhase == SetupPhase.READING_INITIAL_POWER) {
-                    setupPhase = SetupPhase.COMPLETE
-                    Log.i(TAG, "BLE setup complete — app ready")
-                    _state.update { it.copy(connectionState = ConnectionState.Connected) }
-                }
+        // 1. Request MTU — proceed regardless of result; NimBLE negotiates from its end
+        gattRequestMtu(gatt, BleConstants.MTU)
+
+        // 2. Read Available Presets (full GATT read — firmware may fragment across ATT packets,
+        //    but Android's stack reassembles them before delivering to onCharacteristicRead)
+        val presetsBytes = gattRead(gatt, presetsChar)
+        val presets: List<Preset> = presetsBytes
+            ?.let { bytes ->
+                runCatching {
+                    Json.decodeFromString<List<Preset>>(bytes.toString(Charsets.UTF_8))
+                }.onFailure { Log.w(tag, "Preset JSON parse failed: ${it.message}") }.getOrNull()
             }
+            ?: emptyList()
+        _uiState.update { it.copy(presets = presets) }
+
+        // 3. Enable notify on Power
+        enableNotify(gatt, powerChar)
+
+        // 4. Enable notify on Active Preset
+        enableNotify(gatt, activePresetChar)
+
+        // 5. Read initial Power state
+        val powerBytes = gattRead(gatt, powerChar)
+        val powerOn = powerBytes?.firstOrNull()?.toInt()?.and(0xFF) == 0x01
+        _uiState.update { it.copy(isPowerOn = powerOn) }
+
+        // 6. Mark connected — UI unlocks from here
+        _uiState.update { it.copy(connectionState = ConnectionState.Connected) }
+        Log.d(tag, "Setup chain complete — Connected")
+    }
+
+    // ── Primitive GATT operations ─────────────────────────────────────────────
+
+    private suspend fun gattRequestMtu(gatt: BluetoothGatt, mtu: Int) {
+        gattMutex.withLock {
+            pendingDeferred = CompletableDeferred()
+            gatt.requestMtu(mtu)
+            withTimeoutOrNull(BleConstants.GATT_OP_TIMEOUT_MS) { pendingDeferred!!.await() }
         }
     }
 
-    private fun handleCharacteristicChanged(uuid: UUID, value: ByteArray) {
-        when (uuid) {
-            BleConstants.POWER_CHAR_UUID -> {
-                val powered = value.firstOrNull() == 0x01.toByte()
-                Log.d(TAG, "Power notify: $powered")
-                _state.update { it.copy(isPowered = powered) }
-            }
-            BleConstants.ACTIVE_PRESET_CHAR_UUID -> {
-                val raw = value.firstOrNull()?.toInt()?.and(0xFF)
-                val presetId = if (raw == null || raw == BleConstants.NO_ACTIVE_PRESET) null else raw
-                Log.d(TAG, "ActivePreset notify: $presetId")
-                _state.update { it.copy(activePresetId = presetId) }
-            }
+    private suspend fun gattRead(
+        gatt: BluetoothGatt,
+        char: BluetoothGattCharacteristic?,
+    ): ByteArray? {
+        char ?: return null
+        return gattMutex.withLock {
+            pendingDeferred = CompletableDeferred()
+            @Suppress("DEPRECATION")
+            gatt.readCharacteristic(char)
+            withTimeoutOrNull(BleConstants.GATT_OP_TIMEOUT_MS) { pendingDeferred!!.await() }
         }
     }
 
-    // ────────────────────────────────────────────────────────────────────────
-    // Internal helpers
-    // ────────────────────────────────────────────────────────────────────────
-
-    private fun doConnect(device: BluetoothDevice) {
-        gatt?.close()           // close any stale handle from previous attempt
-        gatt = device.connectGatt(
-            context,
-            false,              // autoConnect=false → direct connect (faster, avoids ghost connects)
-            gattCallback,
-            BluetoothDevice.TRANSPORT_LE
-        )
-        this.gatt = gatt
-    }
-
-    private fun scheduleReconnect(device: BluetoothDevice) {
-        reconnectJob?.cancel()
-        reconnectJob = scope.launch {
-            val delayMs = minOf(
-                BleConstants.RECONNECT_BASE_MS * (1L shl reconnectAttempts.coerceAtMost(4)),
-                BleConstants.RECONNECT_MAX_MS
-            )
-            val attempt = reconnectAttempts + 1
-            Log.i(TAG, "Reconnect attempt $attempt in ${delayMs / 1000}s")
-            _state.update {
-                it.copy(connectionState = ConnectionState.Reconnecting(attempt))
+    private suspend fun enableNotify(
+        gatt: BluetoothGatt,
+        char: BluetoothGattCharacteristic?,
+    ) {
+        char ?: return
+        gatt.setCharacteristicNotification(char, true)
+        val cccd = char.getDescriptor(UUID.fromString(BleConstants.CCCD_UUID)) ?: return
+        gattMutex.withLock {
+            pendingDeferred = CompletableDeferred()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                gatt.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+            } else {
+                @Suppress("DEPRECATION")
+                cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                @Suppress("DEPRECATION")
+                gatt.writeDescriptor(cccd)
             }
-            delay(delayMs)
-            reconnectAttempts++
-            if (isActive && targetDevice != null) doConnect(device)
+            withTimeoutOrNull(BleConstants.GATT_OP_TIMEOUT_MS) { pendingDeferred!!.await() }
         }
     }
 
-    /**
-     * Write a characteristic value using the correct API for the running SDK.
-     * The deprecated path sets [BluetoothGattCharacteristic.value] and calls
-     * the old single-arg overload; API 33+ has an atomic write that avoids
-     * the shared-value race condition.
-     */
-    @Suppress("DEPRECATION")
-    private fun writeCharacteristic(
+    private suspend fun gattWrite(
         gatt: BluetoothGatt,
         char: BluetoothGattCharacteristic,
-        value: ByteArray
+        value: ByteArray,
     ) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            gatt.writeCharacteristic(
-                char, value,
-                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-            )
-        } else {
-            char.value     = value
-            char.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-            gatt.writeCharacteristic(char)
+        gattMutex.withLock {
+            pendingDeferred = CompletableDeferred()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                gatt.writeCharacteristic(char, value, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+            } else {
+                @Suppress("DEPRECATION")
+                char.value = value
+                @Suppress("DEPRECATION")
+                gatt.writeCharacteristic(char)
+            }
+            withTimeoutOrNull(BleConstants.GATT_OP_TIMEOUT_MS) { pendingDeferred!!.await() }
         }
     }
 
-    /**
-     * Enable ATT notifications by writing ENABLE_NOTIFICATION_VALUE (0x01, 0x00)
-     * to the CCCD descriptor. Must call [BluetoothGatt.setCharacteristicNotification]
-     * first — that's a local flag only; the descriptor write is what actually
-     * instructs the remote server to start sending notifications.
-     */
-    @Suppress("DEPRECATION")
-    private fun enableNotifications(
-        gatt: BluetoothGatt,
-        char: BluetoothGattCharacteristic
-    ) {
-        gatt.setCharacteristicNotification(char, true)
-        val cccd = char.getDescriptor(BleConstants.CCCD_UUID) ?: run {
-            Log.e(TAG, "No CCCD descriptor on ${char.uuid} — firmware missing descriptor?")
-            return
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            gatt.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
-        } else {
-            cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-            gatt.writeDescriptor(cccd)
+    // ── BLE commands (called from ViewModel / tile intent handler) ────────────
+
+    fun togglePower() {
+        val gatt    = bluetoothGatt ?: return
+        val service = gatt.getService(UUID.fromString(BleConstants.SERVICE_UUID)) ?: return
+        val char    = service.getCharacteristic(UUID.fromString(BleConstants.CHAR_POWER_UUID)) ?: return
+        val newVal  = if (_uiState.value.isPowerOn) 0x00.toByte() else 0x01.toByte()
+        scope.launch { gattWrite(gatt, char, byteArrayOf(newVal)) }
+    }
+
+    fun activatePreset(presetId: Int) {
+        val gatt    = bluetoothGatt ?: return
+        val service = gatt.getService(UUID.fromString(BleConstants.SERVICE_UUID)) ?: return
+        val char    = service.getCharacteristic(UUID.fromString(BleConstants.CHAR_ACTIVE_PRESET_UUID)) ?: return
+        scope.launch { gattWrite(gatt, char, byteArrayOf(presetId.toByte())) }
+    }
+
+    // ── Notify dispatch ───────────────────────────────────────────────────────
+
+    private fun dispatchNotify(uuid: UUID, value: ByteArray) {
+        when (uuid.toString().lowercase()) {
+            BleConstants.CHAR_POWER_UUID.lowercase() -> {
+                val on = value.firstOrNull()?.toInt()?.and(0xFF) == 0x01
+                _uiState.update { it.copy(isPowerOn = on) }
+            }
+            BleConstants.CHAR_ACTIVE_PRESET_UUID.lowercase() -> {
+                val raw = value.firstOrNull()?.toInt()?.and(0xFF) ?: 0xFF
+                _uiState.update { it.copy(activePresetId = if (raw == 0xFF) null else raw) }
+            }
         }
     }
 
-    private fun clearCharacteristicCache() {
-        powerChar        = null
-        presetsChar      = null
-        activePresetChar = null
-        setupPhase       = SetupPhase.IDLE
+    // ── Reconnect ─────────────────────────────────────────────────────────────
+
+    private fun handleDisconnect() {
+        bluetoothGatt?.close()
+        bluetoothGatt = null
+        _uiState.update { it.copy(connectionState = ConnectionState.Disconnected) }
+
+        if (isReconnecting || savedDevice == null) return  // already looping or user disconnected
+        scheduleReconnect()
     }
 
-    private fun updateError(msg: String) {
-        Log.e(TAG, msg)
-        _state.update { it.copy(connectionState = ConnectionState.Error(msg)) }
+    private fun scheduleReconnect() {
+        val device = savedDevice ?: return
+        isReconnecting = true
+        reconnectJob?.cancel()
+        reconnectJob = scope.launch {
+            var delayMs = BleConstants.RECONNECT_INITIAL_DELAY_MS
+            try {
+                while (isActive && savedDevice != null) {
+                    Log.d(tag, "Reconnect in ${delayMs}ms → ${device.address}")
+                    delay(delayMs)
+
+                    doConnect(device.address)
+
+                    // Wait until the connection either succeeds or definitively fails.
+                    // doConnect() sets state → Connecting; we wait for the next terminal state.
+                    uiState.first {
+                        it.connectionState == ConnectionState.Connected ||
+                        it.connectionState == ConnectionState.Disconnected
+                    }
+
+                    if (uiState.value.connectionState == ConnectionState.Connected) break
+                    delayMs = min(delayMs * 2, BleConstants.RECONNECT_MAX_DELAY_MS)
+                }
+            } finally {
+                isReconnecting = false
+            }
+        }
     }
 }

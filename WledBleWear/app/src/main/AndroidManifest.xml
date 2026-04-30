@@ -1,10 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- ── BLE permissions API 26–30 ─────────────────────────────────────── -->
-    <!-- BLUETOOTH / BLUETOOTH_ADMIN cover legacy connect + scan on API <31.  -->
-    <!-- ACCESS_FINE_LOCATION is mandatory for BLE scan results before API 31. -->
+    <!-- ── BLE permissions ──────────────────────────────────────────────── -->
+    <!-- API < 31 -->
     <uses-permission android:name="android.permission.BLUETOOTH"
         android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"
@@ -12,49 +10,53 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
         android:maxSdkVersion="30" />
 
-    <!-- ── BLE permissions API 31+ ───────────────────────────────────────── -->
-    <!-- neverForLocation: scan results will not be used to derive location;  -->
-    <!-- avoids location permission requirement. Valid because we filter by   -->
-    <!-- service UUID — we don't harvest scan results for positioning.        -->
-    <uses-permission
-        android:name="android.permission.BLUETOOTH_SCAN"
-        android:usesPermissionFlags="neverForLocation"
-        tools:targetApi="s" />
-    <uses-permission
-        android:name="android.permission.BLUETOOTH_CONNECT"
-        tools:targetApi="s" />
+    <!-- API 31+ — neverForLocation because we filter by service UUID, not MAC addresses -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
-    <!-- BLE hardware requirement; standalone watch app has no phone dependency -->
+    <uses-feature android:name="android.hardware.type.watch" />
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
-    <uses-feature android:name="android.hardware.type.watch" android:required="true" />
 
     <application
+        android:name=".WledApplication"
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
-        android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.DeviceDefault">
 
-        <!-- Required for WearOS -->
-        <uses-library
-            android:name="com.google.android.wearable"
-            android:required="true" />
+        <uses-library android:name="com.google.android.wearable" android:required="true" />
 
-        <!-- standalone=true: app works without a companion phone app installed -->
         <meta-data
             android:name="com.google.android.wearable.standalone"
             android:value="true" />
 
+        <!-- ── Main activity ──────────────────────────────────────────── -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:taskAffinity=""
-            android:theme="@android:style/Theme.DeviceDefault">
+            android:theme="@style/Theme.Splashscreen">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- ── Tile service ───────────────────────────────────────────── -->
+        <service
+            android:name=".tile.WledTileService"
+            android:exported="true"
+            android:label="@string/tile_label"
+            android:permission="com.google.android.wearable.permission.BIND_TILE_PROVIDER">
+            <intent-filter>
+                <action android:name="androidx.wear.tiles.action.BIND_TILE_PROVIDER" />
+            </intent-filter>
+
+        </service>
+
     </application>
+
 </manifest>

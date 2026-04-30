@@ -1,13 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">WLED BLE</string>
-    <string name="scan_title">WLED BLE</string>
+    <string name="tile_label">WLED Control</string>
+    <string name="scan_title">Scan for WLED</string>
     <string name="scanning">Scanning…</string>
+    <string name="no_devices">No devices found</string>
     <string name="connecting">Connecting…</string>
-    <string name="scan_again">Scan Again</string>
-    <string name="power_on">Power: ON</string>
-    <string name="power_off">Power: OFF</string>
-    <string name="presets_header">Presets</string>
-    <string name="loading_presets">Loading presets…</string>
-    <string name="disconnect">Disconnect</string>
-    <string name="no_presets">No presets found</string>
+    <string name="reconnecting">Reconnecting…</string>
+    <string name="power_on">ON</string>
+    <string name="power_off">OFF</string>
+    <string name="open_app">Open App</string>
+    <string name="tile_no_device">Open app\nto connect</string>
 </resources>

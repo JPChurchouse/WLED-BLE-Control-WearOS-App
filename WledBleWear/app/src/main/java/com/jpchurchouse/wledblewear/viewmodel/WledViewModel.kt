@@ -1,88 +1,82 @@
 package com.jpchurchouse.wledblewear.viewmodel
 
-import android.annotation.SuppressLint
 import android.app.Application
-import android.bluetooth.BluetoothDevice
 import androidx.datastore.preferences.core.edit
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.wear.tiles.TileService
 import com.jpchurchouse.wledblewear.WledApplication
-import com.jpchurchouse.wledblewear.data.PreferencesKeys
+import com.jpchurchouse.wledblewear.data.WledPreferences
 import com.jpchurchouse.wledblewear.data.wledDataStore
-import com.jpchurchouse.wledblewear.model.Preset
+import com.jpchurchouse.wledblewear.model.ConnectionState
+import com.jpchurchouse.wledblewear.model.ScannedDevice
 import com.jpchurchouse.wledblewear.model.WledUiState
 import com.jpchurchouse.wledblewear.tile.WledTileService
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
 
 class WledViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val app        = application as WledApplication
-    private val bleManager = app.bleManager
+    private val bleManager = (application as WledApplication).bleManager
     private val dataStore  = application.wledDataStore
-    private val json       = Json { ignoreUnknownKeys = true }
 
-    val uiState: StateFlow<WledUiState> = bleManager.state
+    val uiState: StateFlow<WledUiState> = bleManager.uiState
 
     init {
+        // Mirror connection events to DataStore so the tile always has fresh info,
+        // and request a tile refresh on every BLE state change.
         viewModelScope.launch {
-            uiState.collect { state ->
-                dataStore.edit { prefs ->
-                    prefs[PreferencesKeys.IS_POWERED] = state.isPowered
-                    state.activePresetId?.let { prefs[PreferencesKeys.ACTIVE_PRESET] = it }
-                    if (state.presets.isNotEmpty()) {
-                        prefs[PreferencesKeys.PRESETS_JSON] =
-                            json.encodeToString<List<Preset>>(state.presets)
-                    }
-                }
-                TileService.getUpdater(app).requestUpdate(WledTileService::class.java)
+            bleManager.uiState.collect { state ->
+                // Refresh tile on any state change
+                TileService.getUpdater(application)
+                    .requestUpdate(WledTileService::class.java)
             }
         }
     }
 
-    @SuppressLint("MissingPermission")
-    fun connect(device: BluetoothDevice) {
+    // ── Scan ──────────────────────────────────────────────────────────────────
+
+    fun startScan() = bleManager.startScan()
+    fun stopScan()  = bleManager.stopScan()
+
+    // ── Connect ───────────────────────────────────────────────────────────────
+
+    fun connect(device: ScannedDevice) {
+        // Persist device info before connecting — tile reads this from DataStore
         viewModelScope.launch {
             dataStore.edit { prefs ->
-                prefs[PreferencesKeys.DEVICE_MAC]  = device.address
-                prefs[PreferencesKeys.DEVICE_NAME] = device.name ?: "WLED Device"
+                prefs[WledPreferences.DEVICE_ADDRESS] = device.address
+                prefs[WledPreferences.DEVICE_NAME]    = device.name
             }
         }
         bleManager.connect(device)
     }
 
-    fun startScan()             = bleManager.startScan()
-    fun disconnect()            = bleManager.disconnect()
-    fun togglePower()           = bleManager.writePower(!uiState.value.isPowered)
-    fun activatePreset(id: Int) = bleManager.writeActivePreset(id)
+    // ── Controls ──────────────────────────────────────────────────────────────
 
-    override fun onCleared() {
-        super.onCleared()
-        // Do NOT call bleManager.cleanup() — tile needs the connection to outlive the ViewModel
+    fun togglePower() = bleManager.togglePower()
+
+    fun activatePreset(presetId: Int) {
+        bleManager.activatePreset(presetId)
+        // Persist recent preset order for tile quick-access buttons
+        viewModelScope.launch {
+            dataStore.edit { prefs ->
+                val existing = prefs[WledPreferences.RECENT_PRESETS]
+                    ?.split(",")
+                    ?.mapNotNull { it.trim().toIntOrNull() }
+                    ?: emptyList()
+                val updated = (listOf(presetId) + existing.filter { it != presetId }).take(3)
+                prefs[WledPreferences.RECENT_PRESETS] = updated.joinToString(",")
+            }
+        }
     }
-}
 
-/**
- * Thin layer between BleManager and Composables.
- * AndroidViewModel gives us Application context without leaking Activity.
- */
-class WledViewModel(application: Application) : AndroidViewModel(application) {
-
-    private val bleManager = BleManager(application)
-
-    val uiState: StateFlow<WledUiState> = bleManager.state
-
-    fun startScan()               = bleManager.startScan()
-    fun connect(device: BluetoothDevice) = bleManager.connect(device)
-    fun disconnect()              = bleManager.disconnect()
-    fun togglePower()             = bleManager.writePower(!uiState.value.isPowered)
-    fun activatePreset(id: Int)   = bleManager.writeActivePreset(id)
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     override fun onCleared() {
         super.onCleared()
-        bleManager.cleanup()
+        // Intentionally empty — BleManager lifecycle is owned by WledApplication,
+        // not by this ViewModel.  The GATT connection must survive ViewModel teardown
+        // so the tile can operate without re-connecting.
     }
 }

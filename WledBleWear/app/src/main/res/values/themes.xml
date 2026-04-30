@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Splashscreen" parent="Theme.SplashScreen">
+        <!-- windowSplashScreenBackground colour shown while app cold-starts -->
+        <item name="windowSplashScreenBackground">#000000</item>
+        <!-- The activity's real theme, applied after the splash exits -->
+        <item name="postSplashScreenTheme">@android:style/Theme.DeviceDefault</item>
+    </style>
+</resources>
