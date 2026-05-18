@@ -15,6 +15,15 @@
         android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
+    <!-- ── Foreground service permissions (complication #3 background toggle) ── -->
+    <!-- Required to call startForegroundService() -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!--
+        Required on API 34+ for foregroundServiceType="connectedDevice".
+        connectedDevice covers BLE GATT operations without needing LOCATION.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+
     <uses-feature android:name="android.hardware.type.watch" />
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
@@ -32,7 +41,7 @@
             android:name="com.google.android.wearable.standalone"
             android:value="true" />
 
-        <!-- ── Main activity ──────────────────────────────────────────── -->
+        <!-- ── Main activity ───────────────────────────────────────────── -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -45,7 +54,7 @@
             </intent-filter>
         </activity>
 
-        <!-- ── Tile service ───────────────────────────────────────────── -->
+        <!-- ── Tile service ────────────────────────────────────────────── -->
         <service
             android:name=".tile.WledTileService"
             android:exported="true"
@@ -54,8 +63,102 @@
             <intent-filter>
                 <action android:name="androidx.wear.tiles.action.BIND_TILE_PROVIDER" />
             </intent-filter>
-
         </service>
+
+        <!-- ── Complication #1 — icon only (SMALL_IMAGE) ──────────────── -->
+        <service
+            android:name=".complication.WledIconComplicationService"
+            android:exported="true"
+            android:label="@string/complication_icon_label"
+            android:permission="com.google.android.wearable.permission.BIND_COMPLICATION_PROVIDER">
+            <intent-filter>
+                <action android:name="android.support.wearable.complications.ACTION_COMPLICATION_UPDATE_REQUEST" />
+            </intent-filter>
+            <meta-data
+                android:name="android.support.wearable.complications.SUPPORTED_TYPES"
+                android:value="SMALL_IMAGE" />
+            <!--
+                UPDATE_PERIOD_SECONDS = 0: we push updates via
+                ComplicationDataSourceUpdateRequester.requestUpdateAll() from
+                WledApplication.startStateSync() on every BLE state change,
+                so polling is unnecessary.
+            -->
+            <meta-data
+                android:name="android.support.wearable.complications.UPDATE_PERIOD_SECONDS"
+                android:value="0" />
+        </service>
+
+        <!-- ── Complication #2 — icon + device name (SHORT_TEXT) ──────── -->
+        <service
+            android:name=".complication.WledLaunchComplicationService"
+            android:exported="true"
+            android:label="@string/complication_launch_label"
+            android:permission="com.google.android.wearable.permission.BIND_COMPLICATION_PROVIDER">
+            <intent-filter>
+                <action android:name="android.support.wearable.complications.ACTION_COMPLICATION_UPDATE_REQUEST" />
+            </intent-filter>
+            <meta-data
+                android:name="android.support.wearable.complications.SUPPORTED_TYPES"
+                android:value="SHORT_TEXT,SMALL_IMAGE" />
+            <meta-data
+                android:name="android.support.wearable.complications.UPDATE_PERIOD_SECONDS"
+                android:value="0" />
+        </service>
+
+        <!-- ── Complication #3 — power toggle (SHORT_TEXT + tap-to-toggle) -->
+        <service
+            android:name=".complication.WledToggleComplicationService"
+            android:exported="true"
+            android:label="@string/complication_toggle_label"
+            android:permission="com.google.android.wearable.permission.BIND_COMPLICATION_PROVIDER">
+            <intent-filter>
+                <action android:name="android.support.wearable.complications.ACTION_COMPLICATION_UPDATE_REQUEST" />
+            </intent-filter>
+            <meta-data
+                android:name="android.support.wearable.complications.SUPPORTED_TYPES"
+                android:value="SHORT_TEXT" />
+            <meta-data
+                android:name="android.support.wearable.complications.UPDATE_PERIOD_SECONDS"
+                android:value="0" />
+        </service>
+
+        <!-- ── Complication #4 — read-only status (LONG_TEXT) ─────────── -->
+        <service
+            android:name=".complication.WledStatusComplicationService"
+            android:exported="true"
+            android:label="@string/complication_status_label"
+            android:permission="com.google.android.wearable.permission.BIND_COMPLICATION_PROVIDER">
+            <intent-filter>
+                <action android:name="android.support.wearable.complications.ACTION_COMPLICATION_UPDATE_REQUEST" />
+            </intent-filter>
+            <meta-data
+                android:name="android.support.wearable.complications.SUPPORTED_TYPES"
+                android:value="LONG_TEXT" />
+            <meta-data
+                android:name="android.support.wearable.complications.UPDATE_PERIOD_SECONDS"
+                android:value="0" />
+        </service>
+
+        <!-- ── Complication #3 tap receiver ───────────────────────────── -->
+        <!--
+            Receives the PendingIntent broadcast fired by WledToggleComplicationService
+            and immediately starts WledToggleForegroundService.
+            exported="false": only this app can send to it (no external trigger surface).
+        -->
+        <receiver
+            android:name=".complication.WledToggleBroadcastReceiver"
+            android:exported="false" />
+
+        <!-- ── Complication #3 background BLE toggle service ──────────── -->
+        <!--
+            foregroundServiceType="connectedDevice": required on API 34+ for BLE GATT
+            operations in a foreground service.  Covered by
+            FOREGROUND_SERVICE_CONNECTED_DEVICE permission declared above.
+        -->
+        <service
+            android:name=".complication.WledToggleForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
 
     </application>
 

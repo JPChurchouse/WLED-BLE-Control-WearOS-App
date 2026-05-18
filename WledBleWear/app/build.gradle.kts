@@ -25,8 +25,8 @@ android {
         applicationId = "com.jpchurchouse.wledblewear"
         minSdk        = 26
         targetSdk     = 35
-        versionCode   = 1
-        versionName   = "1.0.0"
+        versionCode   = 5
+        versionName   = "1.1.0"
     }
 
     signingConfigs {
@@ -77,20 +77,43 @@ dependencies {
     val composeBom = platform(libs.compose.bom)
     implementation(composeBom)
 
+    // ── Compose / Wear ─────────────────────────────────────────────────────
     implementation(libs.wear.compose.material)
     implementation(libs.wear.compose.foundation)
     implementation(libs.wear.compose.navigation)
     implementation(libs.activity.compose)
     implementation(libs.lifecycle.viewmodel.compose)
     implementation(libs.lifecycle.runtime.compose)
+
+    // ── Serialization / Coroutines ─────────────────────────────────────────
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
+
+    // ── AndroidX ───────────────────────────────────────────────────────────
     implementation(libs.core.splashscreen)
+    implementation(libs.datastore.preferences)
+    implementation(libs.concurrent.futures)
+
+    // ── Tiles / ProtoLayout ────────────────────────────────────────────────
     implementation(libs.wear.tiles)
     implementation(libs.wear.tiles.material)
     implementation(libs.protolayout)
     implementation(libs.protolayout.material)
     implementation(libs.protolayout.expression)
-    implementation(libs.datastore.preferences)
-    implementation(libs.concurrent.futures)
+
+    // ── Complications ──────────────────────────────────────────────────────
+    // watchface-complications-data      : ComplicationType, ShortTextComplicationData,
+    //                                     LongTextComplicationData, SmallImageComplicationData,
+    //                                     MonochromaticImage, PlainComplicationText, etc.
+    // watchface-complications-data-source : ComplicationDataSourceService,
+    //                                       ComplicationDataSourceUpdateRequester
+    // watchface-complications-data-source-ktx : SuspendingComplicationDataSourceService
+    //                                           (not used directly, but avoids split-dep issues)
+    //
+    // These are added as string literals rather than catalog aliases because they are new
+    // dependencies not yet present in libs.versions.toml.  Move them into the catalog at
+    // your discretion — the version (1.2.1) is compatible with the rest of this dependency set.
+    implementation("androidx.wear.watchface:watchface-complications-data:1.2.1")
+    implementation("androidx.wear.watchface:watchface-complications-data-source:1.2.1")
+    implementation("androidx.wear.watchface:watchface-complications-data-source-ktx:1.2.1")
 }

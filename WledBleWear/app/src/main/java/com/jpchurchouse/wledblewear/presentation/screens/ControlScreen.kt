@@ -1,11 +1,13 @@
 package com.jpchurchouse.wledblewear.presentation.screens
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -68,7 +70,7 @@ fun ControlScreen(
                 }
             }
 
-            // Reconnecting banner
+            // ── Reconnecting banner ───────────────────────────────────────────
             if (isReconnecting) {
                 item {
                     Text(
@@ -82,6 +84,16 @@ fun ControlScreen(
             }
 
             // ── Power toggle ──────────────────────────────────────────────────
+            //
+            // FIX: the previous version set checkedToggleControlColor = primary (orange),
+            // making the switch thumb invisible against the orange chip background.
+            //
+            // Fix: set checkedToggleControlColor = Color.White so the thumb contrasts
+            // clearly against the chip.  uncheckedToggleControlColor uses a dim onSurface
+            // so the off-state thumb is still visible on the dark surface.
+            //
+            // The secondaryLabel ("On" / "Off") provides an unambiguous text indicator
+            // alongside the sliding switch, making the toggle's state obvious at a glance.
             item {
                 ToggleChip(
                     modifier        = Modifier
@@ -91,14 +103,31 @@ fun ControlScreen(
                     onCheckedChange = { viewModel.togglePower() },
                     enabled         = isConnected,
                     label           = { Text("Power") },
-                    // switchIcon (lowercase) is the correct API in Wear Compose 1.4.x
-                    toggleControl   = {
+                    secondaryLabel  = {
+                        Text(
+                            text  = if (state.isPowerOn) "On" else "Off",
+                            style = MaterialTheme.typography.caption2,
+                            color = if (state.isPowerOn)
+                                WledGreen
+                            else
+                                MaterialTheme.colors.onSurface.copy(alpha = 0.5f),
+                        )
+                    },
+                    toggleControl = {
+                        // switchIcon (lowercase s) is correct in Wear Compose 1.4.x
                         ToggleChipDefaults.switchIcon(checked = state.isPowerOn)
                     },
                     colors = ToggleChipDefaults.toggleChipColors(
-                        checkedStartBackgroundColor = MaterialTheme.colors.primary.copy(alpha = 0.32f),
-                        checkedEndBackgroundColor   = MaterialTheme.colors.primary.copy(alpha = 0.32f),
-                        checkedToggleControlColor   = MaterialTheme.colors.primary,
+                        // Checked background: a gentle orange tint
+                        checkedStartBackgroundColor   = MaterialTheme.colors.primary.copy(alpha = 0.25f),
+                        checkedEndBackgroundColor     = MaterialTheme.colors.primary.copy(alpha = 0.25f),
+                        // White thumb: clearly visible on any background
+                        checkedToggleControlColor     = Color.White,
+                        // Unchecked background: neutral dark surface
+                        uncheckedStartBackgroundColor = MaterialTheme.colors.surface,
+                        uncheckedEndBackgroundColor   = MaterialTheme.colors.surface,
+                        // Dim thumb: visible but not prominent in off state
+                        uncheckedToggleControlColor   = MaterialTheme.colors.onSurface.copy(alpha = 0.55f),
                     ),
                 )
             }
@@ -116,30 +145,50 @@ fun ControlScreen(
                 }
             }
 
-            // ── Preset chips ──────────────────────────────────────────────────
+            // ── Preset items ──────────────────────────────────────────────────
+            //
+            // Visual differentiation from the power toggle and disconnect button:
+            //  • Narrower horizontal padding gives a "list row" feel vs a "button" feel.
+            //  • A small coloured bullet in the icon slot acts as a list marker and
+            //    doubles as the active-state indicator (orange when active, dim otherwise).
+            //  • No border on inactive items, a subtle border on the active one.
             items(state.presets) { preset ->
                 val isActive = preset.id == state.activePresetId
                 Chip(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 2.dp),
+                        .padding(horizontal = 4.dp, vertical = 2.dp),
                     onClick  = { viewModel.activatePreset(preset.id) },
                     enabled  = isConnected,
                     label    = { Text(preset.name, maxLines = 1) },
                     secondaryLabel = if (isActive) {
                         { Text("Active", style = MaterialTheme.typography.caption2) }
                     } else null,
+                    icon = {
+                        // Bullet marker: orange when active, dim grey otherwise
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .background(
+                                    color = if (isActive)
+                                        MaterialTheme.colors.primary
+                                    else
+                                        MaterialTheme.colors.onSurface.copy(alpha = 0.30f),
+                                    shape = CircleShape,
+                                )
+                        )
+                    },
                     colors = ChipDefaults.chipColors(
                         backgroundColor = if (isActive)
-                            MaterialTheme.colors.primary.copy(alpha = 0.28f)
+                            MaterialTheme.colors.primary.copy(alpha = 0.18f)
                         else
-                            MaterialTheme.colors.surface,
+                            Color.Transparent,
                     ),
-                    border = ChipDefaults.chipBorder(),
+                    border = if (isActive) ChipDefaults.chipBorder() else ChipDefaults.chipBorder(),
                 )
             }
 
-            // Empty preset state
+            // ── Empty preset state ────────────────────────────────────────────
             if (state.presets.isEmpty() && isConnected) {
                 item {
                     Text(
@@ -150,6 +199,33 @@ fun ControlScreen(
                         modifier  = Modifier.padding(top = 8.dp),
                     )
                 }
+            }
+
+            // ── Disconnect button ─────────────────────────────────────────────
+            //
+            // Placed below the entire preset list so it requires deliberate scrolling to
+            // reach — reducing the risk of accidental taps.  Error colour signals that
+            // this is a destructive / terminal action.
+            item {
+                Chip(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 16.dp, bottom = 4.dp),
+                    onClick  = { viewModel.disconnect() },
+                    enabled  = true,    // always tappable; backoff-reconnecting user may still want to cancel
+                    label    = {
+                        Text(
+                            text      = "Disconnect",
+                            textAlign = TextAlign.Center,
+                            modifier  = Modifier.fillMaxWidth(),
+                        )
+                    },
+                    colors = ChipDefaults.chipColors(
+                        backgroundColor = MaterialTheme.colors.error.copy(alpha = 0.22f),
+                        contentColor    = MaterialTheme.colors.error,
+                    ),
+                    border = ChipDefaults.chipBorder(),
+                )
             }
         }
     }

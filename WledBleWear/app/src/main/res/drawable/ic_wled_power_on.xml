@@ -1,0 +1,29 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+
+    <!--
+        Filled power button — complication #3, power-on state.
+
+        The filled style reads as "active / on" against the outline used for power-off.
+        Single-colour white; watch face renderer handles tinting.
+
+        Path: Material Design "power_settings_new" (apache-2.0).
+          • Vertical stem:  M13,3 h-2 v10 h2 V3
+          • Arc (270°):     the large arc from ~315° through bottom back to ~225°,
+                            representing the power ring open at the top.
+    -->
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="
+            M13,3h-2v10h2V3z
+            M17.83,5.17l-1.42,1.42
+            C17.99,7.86 19,9.81 19,12
+            c0,3.87 -3.13,7 -7,7s-7,-3.13 -7,-7
+            c0,-2.19 1.01,-4.14 2.58,-5.42
+            L6.17,5.17C4.23,6.82 3,9.26 3,12
+            c0,4.97 4.03,9 9,9s9,-4.03 9,-9
+            c0,-2.74 -1.23,-5.18 -3.17,-6.83z" />
+</vector>

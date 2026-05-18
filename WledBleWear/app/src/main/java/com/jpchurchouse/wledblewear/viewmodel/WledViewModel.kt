@@ -4,15 +4,13 @@ import android.app.Application
 import androidx.datastore.preferences.core.edit
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import androidx.wear.tiles.TileService
 import com.jpchurchouse.wledblewear.WledApplication
 import com.jpchurchouse.wledblewear.data.WledPreferences
 import com.jpchurchouse.wledblewear.data.wledDataStore
-import com.jpchurchouse.wledblewear.model.ConnectionState
 import com.jpchurchouse.wledblewear.model.ScannedDevice
 import com.jpchurchouse.wledblewear.model.WledUiState
-import com.jpchurchouse.wledblewear.tile.WledTileService
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 class WledViewModel(application: Application) : AndroidViewModel(application) {
@@ -22,17 +20,9 @@ class WledViewModel(application: Application) : AndroidViewModel(application) {
 
     val uiState: StateFlow<WledUiState> = bleManager.uiState
 
-    init {
-        // Mirror connection events to DataStore so the tile always has fresh info,
-        // and request a tile refresh on every BLE state change.
-        viewModelScope.launch {
-            bleManager.uiState.collect { state ->
-                // Refresh tile on any state change
-                TileService.getUpdater(application)
-                    .requestUpdate(WledTileService::class.java)
-            }
-        }
-    }
+    // NOTE: state sync (DataStore writes, tile + complication refresh) has been
+    // moved to WledApplication.startStateSync(), which runs in appScope for the
+    // entire process lifetime — not just while MainActivity exists.
 
     // ── Scan ──────────────────────────────────────────────────────────────────
 
@@ -42,7 +32,6 @@ class WledViewModel(application: Application) : AndroidViewModel(application) {
     // ── Connect ───────────────────────────────────────────────────────────────
 
     fun connect(device: ScannedDevice) {
-        // Persist device info before connecting — tile reads this from DataStore
         viewModelScope.launch {
             dataStore.edit { prefs ->
                 prefs[WledPreferences.DEVICE_ADDRESS] = device.address
@@ -52,13 +41,34 @@ class WledViewModel(application: Application) : AndroidViewModel(application) {
         bleManager.connect(device)
     }
 
+    /**
+     * Read the last-connected device from DataStore and attempt to reconnect.
+     * Used by MainActivity when a tile "connect_lcd" intent is received.
+     *
+     * Note: BleManager.connect() starts the exponential-backoff reconnect loop.
+     * MainActivity is responsible for imposing a timeout and calling disconnect()
+     * if the connection does not complete within the allowed window.
+     */
+    fun connectToLastDevice() {
+        viewModelScope.launch {
+            val prefs   = dataStore.data.first()
+            val address = prefs[WledPreferences.DEVICE_ADDRESS] ?: return@launch
+            val name    = prefs[WledPreferences.DEVICE_NAME] ?: "WLED"
+            bleManager.connect(ScannedDevice(address, name))
+        }
+    }
+
     // ── Controls ──────────────────────────────────────────────────────────────
 
     fun togglePower() = bleManager.togglePower()
 
+    /**
+     * Activate a preset and maintain the RECENT_PRESETS ordered list in DataStore
+     * (newest first, capped at 3).  ACTIVE_PRESET_NAME is written by
+     * WledApplication.startStateSync() once the BLE notification round-trips back.
+     */
     fun activatePreset(presetId: Int) {
         bleManager.activatePreset(presetId)
-        // Persist recent preset order for tile quick-access buttons
         viewModelScope.launch {
             dataStore.edit { prefs ->
                 val existing = prefs[WledPreferences.RECENT_PRESETS]
@@ -71,12 +81,25 @@ class WledViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * User-initiated disconnect.
+     *
+     * Requires BleManager.disconnect() to:
+     *   1. Cancel any pending reconnect-backoff coroutine.
+     *   2. Call gatt?.disconnect() + gatt?.close().
+     *   3. Emit ConnectionState.Idle to uiState.
+     *
+     * The Idle emission triggers WledApplication.startStateSync() to remove all
+     * stale DataStore keys (IS_POWER_ON, ACTIVE_PRESET_NAME), so the tile and
+     * complications revert to the "no live data" display.
+     */
+    fun disconnect() = bleManager.disconnect()
+
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     override fun onCleared() {
         super.onCleared()
-        // Intentionally empty — BleManager lifecycle is owned by WledApplication,
-        // not by this ViewModel.  The GATT connection must survive ViewModel teardown
-        // so the tile can operate without re-connecting.
+        // Intentionally empty — BleManager lifecycle is owned by WledApplication.
+        // The GATT connection must survive ViewModel teardown.
     }
 }

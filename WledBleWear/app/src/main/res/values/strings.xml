@@ -11,4 +11,8 @@
     <string name="power_off">OFF</string>
     <string name="open_app">Open App</string>
     <string name="tile_no_device">Open app\nto connect</string>
+    <string name="complication_icon_label">WLED Icon</string>
+    <string name="complication_launch_label">WLED Device</string>
+    <string name="complication_toggle_label">WLED Power</string>
+    <string name="complication_status_label">WLED Status</string>
 </resources>
