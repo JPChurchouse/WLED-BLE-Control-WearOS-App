@@ -1,2 +1,10 @@
 Redo encryption thing
 & "C:\Program Files\Android\Android Studio\jbr\bin\keytool.exe" -genkey -v -keystore wled-ble-release.keystore -alias wled-ble -keyalg RSA -keysize 2048 -validity 10000
+
+
+./gradlew clean bundleRelease
+
+
+& "C:\Program Files\Android\Android Studio\jbr\bin\keytool.exe" -genkeypair -v -keystore "C:\Users\Jamie\Git\.keystore\wled-ble-wear-release.keystore" -alias wled-ble-wear -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Jamie Churchouse, OU=, O=, L=, S=, C=NZ"
+
+& "C:\Program Files\Android\Android Studio\jbr\bin\keytool.exe" -list -v -keystore "C:\Users\Jamie\Git\.keystore\wled-ble-wear-release.keystore" -alias wled-ble-wear
