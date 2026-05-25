@@ -2,7 +2,7 @@
 
 A WearOS app for controlling [WLED](https://kno.wled.ge/) LED controllers over Bluetooth Low Energy (BLE), directly from your wrist — no phone, no Wi-Fi required.
 
-> Tested on a Pixel Watch 2 running WearOS 4 (API 34), against an ESP32 running WLED with a custom BLE GATT server firmware.
+> Tested on a Galaxy Watch 8 running WearOS 6.0, against an ESP32 running WLED with a custom BLE GATT server firmware.
 
 ---
 
@@ -38,11 +38,9 @@ A WearOS app for controlling [WLED](https://kno.wled.ge/) LED controllers over B
 
 ## Screenshots
 
-> _Add screenshots here once the app is running on device._
-
-| Scan screen | Control screen | Tile (connected) | Tile (stale) |
-|:-----------:|:--------------:|:----------------:|:------------:|
-| _(todo)_ | _(todo)_ | _(todo)_ | _(todo)_ |
+| Scan Screen | Control Screen (Power) | Control Screen (Presets) | Tile | Complications |
+|:-----------:|:--------------:|:----------------:|:----------------:|:----------------:|
+| ![Scan Screen](/images/screenshots/ScanScreen_Scanning.png "Scanning Screen") | ![Control Screen](/images/screenshots/ControlScreen_PowerOn.png "Control Screen") | ![Control Screen](/images/screenshots/ControlScreen_List.png "Control Screen") | ![Tile](/images/screenshots/Tile.png "Tile") | ![Complications](/images/screenshots/Complications_PowerOn.png "Complications") |
 
 ---
 
@@ -65,7 +63,7 @@ The watch must support BLE. No companion phone app is required.
 
 ## BLE Firmware
 
-WledBleWear expects an ESP32 running WLED with a custom GATT server that exposes the following service and characteristics. The [WLED BLE server firmware](https://github.com/your-repo/wled-ble-firmware) _(link TBD)_ is a separate project.
+WledBleWear expects an ESP32 running WLED with a custom GATT server that exposes the following service and characteristics. The [WLED BLE server firmware](https://github.com/JPChurchouse/WLED-BLE-Plugin) is a separate project.
 
 ### Service
 
@@ -312,7 +310,6 @@ These are non-obvious constraints discovered during development. They are record
 - [ ] Colour picker (RGB) via a custom BLE characteristic
 - [ ] Preset name display in complications (currently shows cached name from last connection)
 - [ ] Multiple saved devices
-- [ ] WearOS health-services integration (e.g. auto-toggle on workout start)
 
 ---
 
