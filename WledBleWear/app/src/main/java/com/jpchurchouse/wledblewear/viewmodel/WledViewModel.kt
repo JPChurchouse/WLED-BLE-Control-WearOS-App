@@ -1,105 +1,105 @@
 package com.jpchurchouse.wledblewear.viewmodel
 
 import android.app.Application
-import androidx.datastore.preferences.core.edit
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.jpchurchouse.wledblewear.WledApplication
+import com.jpchurchouse.wledblewear.ble.Protocol
 import com.jpchurchouse.wledblewear.data.WledPreferences
+import com.jpchurchouse.wledblewear.data.forgetDevice
+import com.jpchurchouse.wledblewear.data.savedDevices
 import com.jpchurchouse.wledblewear.data.wledDataStore
 import com.jpchurchouse.wledblewear.model.ScannedDevice
 import com.jpchurchouse.wledblewear.model.WledUiState
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 class WledViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val bleManager = (application as WledApplication).bleManager
-    private val dataStore  = application.wledDataStore
+    private val app = application as WledApplication
+    private val ble = app.bleManager
+    private val dataStore = application.wledDataStore
 
-    val uiState: StateFlow<WledUiState> = bleManager.uiState
+    val uiState: StateFlow<WledUiState> = ble.uiState
 
-    // NOTE: state sync (DataStore writes, tile + complication refresh) has been
-    // moved to WledApplication.startStateSync(), which runs in appScope for the
-    // entire process lifetime — not just while MainActivity exists.
+    val savedDevices: StateFlow<List<ScannedDevice>> = dataStore.data
+        .map { it.savedDevices() }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    // ── Scan ──────────────────────────────────────────────────────────────────
+    // ── Scan / connect ────────────────────────────────────────────────────────
 
-    fun startScan() = bleManager.startScan()
-    fun stopScan()  = bleManager.stopScan()
+    fun startScan() = ble.startScan()
+    fun stopScan() = ble.stopScan()
 
-    // ── Connect ───────────────────────────────────────────────────────────────
+    /** The device is saved (and becomes the tile's device) once the connection succeeds. */
+    fun connect(device: ScannedDevice) = ble.connect(device, keepConnected = true)
 
-    fun connect(device: ScannedDevice) {
+    /** Reconnect to the tile's current device, e.g. from the tile's "Open app". */
+    fun connectToCurrentDevice(onNone: () -> Unit = {}) {
         viewModelScope.launch {
-            dataStore.edit { prefs ->
-                prefs[WledPreferences.DEVICE_ADDRESS] = device.address
-                prefs[WledPreferences.DEVICE_NAME]    = device.name
-            }
+            val prefs = dataStore.data.first()
+            val address = prefs[WledPreferences.DEVICE_ADDRESS] ?: return@launch onNone()
+            connect(ScannedDevice(address, prefs[WledPreferences.DEVICE_NAME] ?: "WLED"))
         }
-        bleManager.connect(device)
     }
 
-    /**
-     * Read the last-connected device from DataStore and attempt to reconnect.
-     * Used by MainActivity when a tile "connect_lcd" intent is received.
-     *
-     * Note: BleManager.connect() starts the exponential-backoff reconnect loop.
-     * MainActivity is responsible for imposing a timeout and calling disconnect()
-     * if the connection does not complete within the allowed window.
-     */
-    fun connectToLastDevice() {
+    fun retry() {
+        val s = uiState.value
+        val address = s.connectedAddress ?: return
+        connect(ScannedDevice(address, s.connectedDeviceName ?: "WLED"))
+    }
+
+    /** Drops the watch's stale bond so the device can be paired again, then retries. */
+    fun forgetPairingAndRetry() {
+        uiState.value.connectedAddress?.let(ble::forgetBond)
         viewModelScope.launch {
-            val prefs   = dataStore.data.first()
-            val address = prefs[WledPreferences.DEVICE_ADDRESS] ?: return@launch
-            val name    = prefs[WledPreferences.DEVICE_NAME] ?: "WLED"
-            bleManager.connect(ScannedDevice(address, name))
+            delay(1_000)  // let the stack finish removing the bond
+            retry()
+        }
+    }
+
+    fun disconnect() = ble.disconnect()
+
+    /** Unpairs and removes the device from the saved list. */
+    fun forgetDevice(address: String) {
+        if (uiState.value.connectedAddress == address) ble.disconnect()
+        ble.forgetBond(address)
+        viewModelScope.launch {
+            app.forgetDevice(address)
+            app.refreshSurfaces()
         }
     }
 
     // ── Controls ──────────────────────────────────────────────────────────────
 
-    fun togglePower() = bleManager.togglePower()
+    fun setPower(on: Boolean) = ble.command(Protocol.Cmd.power(on))
+    fun activatePreset(id: Int) = ble.command(Protocol.Cmd.preset(id))
+    fun nextPreset() = ble.command(Protocol.Cmd.next())
+    fun previousPreset() = ble.command(Protocol.Cmd.prev())
+    fun startNightlight(minutes: Int) = ble.command(Protocol.Cmd.nightlight(minutes))
+    fun cancelNightlight() = ble.command(Protocol.Cmd.nightlight(0))
+    fun offAndDisconnect() = ble.command(Protocol.Cmd.offAndDisconnect())
 
-    /**
-     * Activate a preset and maintain the RECENT_PRESETS ordered list in DataStore
-     * (newest first, capped at 3).  ACTIVE_PRESET_NAME is written by
-     * WledApplication.startStateSync() once the BLE notification round-trips back.
-     */
-    fun activatePreset(presetId: Int) {
-        bleManager.activatePreset(presetId)
-        viewModelScope.launch {
-            dataStore.edit { prefs ->
-                val existing = prefs[WledPreferences.RECENT_PRESETS]
-                    ?.split(",")
-                    ?.mapNotNull { it.trim().toIntOrNull() }
-                    ?: emptyList()
-                val updated = (listOf(presetId) + existing.filter { it != presetId }).take(3)
-                prefs[WledPreferences.RECENT_PRESETS] = updated.joinToString(",")
+    private var brightnessJob: Job? = null
+    private var pendingBrightness: Int? = null
+
+    /** Sends at most one brightness command per 150 ms, always ending on the latest value. */
+    fun setBrightness(value: Int) {
+        pendingBrightness = value
+        if (brightnessJob?.isActive == true) return
+        brightnessJob = viewModelScope.launch {
+            while (true) {
+                val v = pendingBrightness ?: break
+                pendingBrightness = null
+                ble.sendCommand(Protocol.Cmd.brightness(v))
+                delay(150)
             }
         }
-    }
-
-    /**
-     * User-initiated disconnect.
-     *
-     * Requires BleManager.disconnect() to:
-     *   1. Cancel any pending reconnect-backoff coroutine.
-     *   2. Call gatt?.disconnect() + gatt?.close().
-     *   3. Emit ConnectionState.Idle to uiState.
-     *
-     * The Idle emission triggers WledApplication.startStateSync() to remove all
-     * stale DataStore keys (IS_POWER_ON, ACTIVE_PRESET_NAME), so the tile and
-     * complications revert to the "no live data" display.
-     */
-    fun disconnect() = bleManager.disconnect()
-
-    // ── Lifecycle ─────────────────────────────────────────────────────────────
-
-    override fun onCleared() {
-        super.onCleared()
-        // Intentionally empty — BleManager lifecycle is owned by WledApplication.
-        // The GATT connection must survive ViewModel teardown.
     }
 }
