@@ -3,332 +3,217 @@ package com.jpchurchouse.wledblewear.tile
 import androidx.concurrent.futures.ResolvableFuture
 import androidx.wear.protolayout.ActionBuilders
 import androidx.wear.protolayout.ColorBuilders.argb
-import androidx.wear.protolayout.LayoutElementBuilders.*
+import androidx.wear.protolayout.DeviceParametersBuilders.DeviceParameters
+import androidx.wear.protolayout.LayoutElementBuilders.LayoutElement
+import androidx.wear.protolayout.LayoutElementBuilders.TEXT_ALIGN_CENTER
 import androidx.wear.protolayout.ModifiersBuilders
-import androidx.wear.tiles.ResourceBuilders
 import androidx.wear.protolayout.TimelineBuilders
+import androidx.wear.protolayout.material.Button
+import androidx.wear.protolayout.material.ButtonDefaults
 import androidx.wear.protolayout.material.CompactChip
 import androidx.wear.protolayout.material.Text
 import androidx.wear.protolayout.material.Typography
+import androidx.wear.protolayout.material.layouts.MultiButtonLayout
 import androidx.wear.protolayout.material.layouts.PrimaryLayout
 import androidx.wear.tiles.RequestBuilders
+import androidx.wear.tiles.ResourceBuilders
 import androidx.wear.tiles.TileBuilders
 import androidx.wear.tiles.TileService
 import com.google.common.util.concurrent.ListenableFuture
-import com.jpchurchouse.wledblewear.EXTRA_TILE_COMMAND
+import com.jpchurchouse.wledblewear.EXTRA_OPEN_CURRENT
 import com.jpchurchouse.wledblewear.MainActivity
+import com.jpchurchouse.wledblewear.R
+import com.jpchurchouse.wledblewear.action.ActionActivity
+import com.jpchurchouse.wledblewear.action.Actions
 import com.jpchurchouse.wledblewear.data.WledPreferences
+import com.jpchurchouse.wledblewear.data.currentFavourites
 import com.jpchurchouse.wledblewear.data.wledDataStore
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 
 /**
- * WledTileService — glanceable WLED control surface.
- *
- * Layout states (in priority order):
- *
- *   1. NO_DEVICE      — DataStore has no DEVICE_ADDRESS.
- *                       Shows "Open app to connect."
- *
- *   2. CONNECT_FAILED — A recent tile-initiated connect attempt timed out.
- *                       Shows device name in red + "Connection failed" + "Try Again" chip.
- *                       Clears on next successful connect or next attempt.
- *
- *   3. CONNECTED      — IS_CONNECTED = true.
- *                       Shows device name in green, live power state, active preset name.
- *                       "Open App" chip brings the running app to the foreground.
- *
- *   4. STALE          — IS_CONNECTED = false, but IS_POWER_ON / ACTIVE_PRESET_NAME exist
- *                       (involuntary drop; app was killed with device live).
- *                       Shows device name in amber, "Last known:" prefix, dimmed state.
- *                       "Open App" chip triggers a reconnect attempt via MainActivity.
- *
- *   5. DISCONNECTED   — IS_CONNECTED = false and no stale power data
- *                       (user explicitly disconnected).
- *                       Shows device name only + "Open App" chip.
- *
- * All interactive chips use LaunchAction → MainActivity.  The tile never touches BLE.
- * CONNECT_FAILED is written by MainActivity after a timed-out reconnect attempt.
- * WledApplication.startStateSync() clears it on the next successful connect.
- *
- * runBlocking on a single DataStore .data.first() is safe on TileService's background
- * executor — the same pattern used by the original tile.
+ * WLED tile: status of the current device plus one-tap buttons (power, previous, next and
+ * up to two favourite presets). Buttons launch ActionActivity → ActionService, which does
+ * the BLE work in the background; the tile never touches BLE and reads only DataStore.
  */
 class WledTileService : TileService() {
 
-    // ── TileService overrides ─────────────────────────────────────────────────
-
-    override fun onTileRequest(
-        requestParams: RequestBuilders.TileRequest,
-    ): ListenableFuture<TileBuilders.Tile> {
+    override fun onTileRequest(requestParams: RequestBuilders.TileRequest): ListenableFuture<TileBuilders.Tile> {
         val future = ResolvableFuture.create<TileBuilders.Tile>()
         try {
-            future.set(buildTile())
+            future.set(buildTile(requestParams.deviceConfiguration))
         } catch (e: Exception) {
             future.setException(e)
         }
         return future
     }
 
-    override fun onResourcesRequest(
-        requestParams: RequestBuilders.ResourcesRequest,
-    ): ListenableFuture<ResourceBuilders.Resources> {
+    override fun onResourcesRequest(requestParams: RequestBuilders.ResourcesRequest): ListenableFuture<ResourceBuilders.Resources> {
         val future = ResolvableFuture.create<ResourceBuilders.Resources>()
-        future.set(ResourceBuilders.Resources.Builder().setVersion("1").build())
+        val resources = ResourceBuilders.Resources.Builder().setVersion(RESOURCES_VERSION)
+        ICONS.forEach { (id, res) ->
+            resources.addIdToImageMapping(id,
+                ResourceBuilders.ImageResource.Builder()
+                    .setAndroidResourceByResId(
+                        ResourceBuilders.AndroidImageResourceByResId.Builder().setResourceId(res).build()
+                    )
+                    .build())
+        }
+        future.set(resources.build())
         return future
     }
 
-    // ── Tile builder ──────────────────────────────────────────────────────────
-
-    private fun buildTile(): TileBuilders.Tile {
+    private fun buildTile(device: DeviceParameters): TileBuilders.Tile {
+        // runBlocking on one DataStore read is fine on the tile's background executor.
         val prefs = runBlocking { applicationContext.wledDataStore.data.first() }
-
-        val deviceAddress   = prefs[WledPreferences.DEVICE_ADDRESS]
-        val deviceName      = prefs[WledPreferences.DEVICE_NAME]
-        val isConnected     = prefs[WledPreferences.IS_CONNECTED] ?: false
-        val isPowerOn       = prefs[WledPreferences.IS_POWER_ON]        // null = no stale data
-        val activePreset    = prefs[WledPreferences.ACTIVE_PRESET_NAME] // null = no stale data
-        val connectFailed   = prefs[WledPreferences.CONNECT_FAILED] ?: false
+        val name = prefs[WledPreferences.DEVICE_NAME] ?: "WLED"
 
         val layout = when {
-            deviceAddress == null -> buildNoDeviceLayout()
-            connectFailed        -> buildFailedLayout(deviceName ?: "WLED")
-            isConnected          -> buildConnectedLayout(deviceName ?: "WLED", isPowerOn ?: false, activePreset)
-            isPowerOn != null    -> buildStaleLayout(deviceName ?: "WLED", isPowerOn, activePreset)
-            else                 -> buildDisconnectedLayout(deviceName ?: "WLED")
+            prefs[WledPreferences.DEVICE_ADDRESS] == null -> messageLayout(device, null, "Open the app\nto add a device")
+            prefs[WledPreferences.NEEDS_PAIRING] != null ->
+                messageLayout(device, "✕ $name", "Needs pairing.\nOpen the app.", COLOR_ERROR)
+            else -> controlLayout(device, name, prefs)
         }
 
         return TileBuilders.Tile.Builder()
-            .setResourcesVersion("1")
+            .setResourcesVersion(RESOURCES_VERSION)
             .setTileTimeline(TimelineBuilders.Timeline.fromLayoutElement(layout))
             .build()
     }
 
-    // ── Layout builders ───────────────────────────────────────────────────────
+    // ── Layouts ───────────────────────────────────────────────────────────────
 
-    /** State 1: no device has ever been configured. */
-    private fun buildNoDeviceLayout(): LayoutElement {
-        val params = defaultDeviceParams()
-        return PrimaryLayout.Builder(params)
+    private fun messageLayout(device: DeviceParameters, title: String?, message: String, titleColor: Int = COLOR_DIM): LayoutElement {
+        val builder = PrimaryLayout.Builder(device)
             .setContent(
-                Text.Builder(this, "Open app\nto connect")
+                Text.Builder(this, message)
                     .setTypography(Typography.TYPOGRAPHY_CAPTION1)
                     .setColor(argb(COLOR_DIM))
                     .setMultilineAlignment(TEXT_ALIGN_CENTER)
+                    .setMaxLines(3)
                     .build()
             )
-            .setPrimaryChipContent(
-                CompactChip.Builder(this, "Open App", clickable(openAppAction()), params).build()
-            )
-            .build()
-    }
-
-    /**
-     * State 2: a tile-initiated connect attempt timed out.
-     * Shows the device name in red + a "Try Again" chip that re-attempts.
-     * CONNECT_FAILED is cleared by WledApplication when connection next succeeds.
-     */
-    private fun buildFailedLayout(deviceName: String): LayoutElement {
-        val params = defaultDeviceParams()
-        return PrimaryLayout.Builder(params)
-            .setPrimaryLabelTextContent(
-                Text.Builder(this, "✕ $deviceName")
-                    .setTypography(Typography.TYPOGRAPHY_CAPTION1)
-                    .setColor(argb(COLOR_ERROR))
-                    .build()
-            )
-            .setContent(
-                Text.Builder(this, "Connection\nfailed")
-                    .setTypography(Typography.TYPOGRAPHY_CAPTION2)
-                    .setColor(argb(COLOR_DIM))
-                    .setMultilineAlignment(TEXT_ALIGN_CENTER)
-                    .build()
-            )
-            .setPrimaryChipContent(
-                CompactChip.Builder(this, "Try Again", clickable(connectLcdAction()), params).build()
-            )
-            .build()
-    }
-
-    /**
-     * State 3: BLE reports Connected.
-     * Shows live power and preset state.  "Open App" brings the activity to the foreground.
-     */
-    private fun buildConnectedLayout(
-        deviceName: String,
-        isPowerOn: Boolean,
-        activePreset: String?,
-    ): LayoutElement {
-        val params = defaultDeviceParams()
-        val col = Column.Builder()
-            .setHorizontalAlignment(HORIZONTAL_ALIGN_CENTER)
-            .addContent(
-                Text.Builder(this, if (isPowerOn) "Power: On" else "Power: Off")
-                    .setTypography(Typography.TYPOGRAPHY_CAPTION1)
-                    .setColor(argb(if (isPowerOn) COLOR_GREEN else COLOR_DIM))
-                    .build()
-            )
-
-        if (activePreset != null) {
-            col.addContent(
-                Text.Builder(this, activePreset)
-                    .setTypography(Typography.TYPOGRAPHY_CAPTION2)
-                    .setColor(argb(COLOR_LIGHT))
-                    .build()
+            .setPrimaryChipContent(openAppChip(device))
+        if (title != null) {
+            builder.setPrimaryLabelTextContent(
+                Text.Builder(this, title).setTypography(Typography.TYPOGRAPHY_CAPTION1).setColor(argb(titleColor)).build()
             )
         }
-
-        return PrimaryLayout.Builder(params)
-            .setPrimaryLabelTextContent(
-                Text.Builder(this, "● $deviceName")
-                    .setTypography(Typography.TYPOGRAPHY_CAPTION1)
-                    .setColor(argb(COLOR_GREEN))
-                    .build()
-            )
-            .setContent(col.build())
-            .setPrimaryChipContent(
-                CompactChip.Builder(this, "Open App", clickable(connectLcdAction()), params).build()
-            )
-            .build()
+        return builder.build()
     }
 
-    /**
-     * State 4: disconnected but stale IS_POWER_ON data exists (involuntary drop).
-     * Shows device name in amber with "Last known:" prefix on content to signal staleness.
-     * "Open App" sends connect_lcd so MainActivity will attempt reconnect.
-     */
-    private fun buildStaleLayout(
-        deviceName: String,
-        isPowerOn: Boolean,
-        activePreset: String?,
+    private fun controlLayout(
+        device: DeviceParameters,
+        name: String,
+        prefs: androidx.datastore.preferences.core.Preferences,
     ): LayoutElement {
-        val params = defaultDeviceParams()
-        val col = Column.Builder()
-            .setHorizontalAlignment(HORIZONTAL_ALIGN_CENTER)
-            .addContent(
-                Text.Builder(this, "Last known:")
-                    .setTypography(Typography.TYPOGRAPHY_CAPTION2)
-                    .setColor(argb(COLOR_DIM))
-                    .build()
-            )
-            .addContent(
-                Text.Builder(this, if (isPowerOn) "Power: On" else "Power: Off")
-                    .setTypography(Typography.TYPOGRAPHY_CAPTION1)
-                    .setColor(argb(if (isPowerOn) COLOR_GREEN_DIM else COLOR_DIM))
-                    .build()
-            )
+        val connected = prefs[WledPreferences.IS_CONNECTED] ?: false
+        val powerOn = prefs[WledPreferences.IS_POWER_ON]
+        val preset = prefs[WledPreferences.ACTIVE_PRESET_NAME]
+        val busy = prefs[WledPreferences.ACTION_IN_PROGRESS]
+        val failed = prefs[WledPreferences.CONNECT_FAILED] ?: false
 
-        if (activePreset != null) {
-            col.addContent(
-                Text.Builder(this, activePreset)
-                    .setTypography(Typography.TYPOGRAPHY_CAPTION2)
-                    .setColor(argb(COLOR_DIM))
-                    .build()
-            )
+        val status = when {
+            busy != null -> "$busy…"
+            failed -> "Couldn't connect"
+            powerOn == null -> "Tap a button to connect"
+            else -> buildString {
+                if (!connected) append("Last: ")
+                append(if (powerOn) "On" else "Off")
+                if (powerOn && preset != null) append(" · ").append(preset)
+            }
+        }
+        val statusColor = when {
+            failed && busy == null -> COLOR_ERROR
+            connected -> COLOR_LIGHT
+            else -> COLOR_DIM
         }
 
-        return PrimaryLayout.Builder(params)
-            .setPrimaryLabelTextContent(
-                // Amber circle signals "was connected, now stale"
-                Text.Builder(this, "◌ $deviceName")
-                    .setTypography(Typography.TYPOGRAPHY_CAPTION1)
-                    .setColor(argb(COLOR_AMBER))
-                    .build()
+        val buttons = MultiButtonLayout.Builder()
+            .addButtonContent(
+                actionButton(Actions.TOGGLE, "Power",
+                    if (powerOn == true) ButtonDefaults.PRIMARY_COLORS else ButtonDefaults.SECONDARY_COLORS) {
+                    setIconContent(ICON_POWER)
+                }
             )
-            .setContent(col.build())
-            .setPrimaryChipContent(
-                CompactChip.Builder(this, "Open App", clickable(connectLcdAction()), params).build()
-            )
-            .build()
-    }
+            .addButtonContent(actionButton(Actions.PREV, "Previous preset") { setIconContent(ICON_PREV) })
+            .addButtonContent(actionButton(Actions.NEXT, "Next preset") { setIconContent(ICON_NEXT) })
+        prefs.currentFavourites().take(2).forEach { fav ->
+            buttons.addButtonContent(actionButton(Actions.preset(fav.id), fav.name) { setTextContent(fav.shortLabel.take(3)) })
+        }
 
-    /**
-     * State 5: user explicitly disconnected — no stale data.
-     * Shows device name only; "Open App" starts the normal scan → connect flow.
-     */
-    private fun buildDisconnectedLayout(deviceName: String): LayoutElement {
-        val params = defaultDeviceParams()
-        return PrimaryLayout.Builder(params)
+        return PrimaryLayout.Builder(device)
             .setPrimaryLabelTextContent(
-                Text.Builder(this, "○ $deviceName")
+                Text.Builder(this, "${if (connected) "●" else "○"} $name")
                     .setTypography(Typography.TYPOGRAPHY_CAPTION1)
-                    .setColor(argb(COLOR_DIM))
+                    .setColor(argb(if (connected) COLOR_GREEN else COLOR_LIGHT))
                     .build()
             )
-            .setContent(
-                Text.Builder(this, "Not connected")
+            .setContent(buttons.build())
+            .setSecondaryLabelTextContent(
+                Text.Builder(this, status)
                     .setTypography(Typography.TYPOGRAPHY_CAPTION2)
-                    .setColor(argb(COLOR_DIM))
+                    .setColor(argb(statusColor))
                     .build()
             )
-            .setPrimaryChipContent(
-                CompactChip.Builder(this, "Open App", clickable(openAppAction()), params).build()
-            )
+            .setPrimaryChipContent(openAppChip(device))
             .build()
     }
 
-    // ── Action / Clickable helpers ────────────────────────────────────────────
+    // ── Elements ──────────────────────────────────────────────────────────────
 
-    private fun clickable(action: ActionBuilders.Action): ModifiersBuilders.Clickable =
-        ModifiersBuilders.Clickable.Builder()
-            .setOnClick(action)
+    private fun actionButton(
+        action: String,
+        description: String,
+        colors: androidx.wear.protolayout.material.ButtonColors = ButtonDefaults.SECONDARY_COLORS,
+        content: Button.Builder.() -> Unit,
+    ): LayoutElement =
+        Button.Builder(this, clickable(action, launch(ActionActivity::class.java.name) {
+            addKeyToExtraMapping(Actions.EXTRA_ACTION,
+                ActionBuilders.AndroidStringExtra.Builder().setValue(action).build())
+        }))
+            .apply(content)
+            .setContentDescription(description)
+            .setButtonColors(colors)
             .build()
 
-    /**
-     * Launches MainActivity with EXTRA_TILE_COMMAND = "connect_lcd".
-     * MainActivity will attempt to reconnect to the last known device (3 attempts / 10s),
-     * navigate to ControlScreen on success, or write CONNECT_FAILED on timeout.
-     */
-    private fun connectLcdAction(): ActionBuilders.Action =
+    private fun openAppChip(device: DeviceParameters) =
+        CompactChip.Builder(
+            this, "Open",
+            clickable("open", launch(MainActivity::class.java.name) {
+                addKeyToExtraMapping(EXTRA_OPEN_CURRENT,
+                    ActionBuilders.AndroidBooleanExtra.Builder().setValue(true).build())
+            }),
+            device,
+        ).build()
+
+    private fun launch(className: String, extras: ActionBuilders.AndroidActivity.Builder.() -> Unit): ActionBuilders.Action =
         ActionBuilders.LaunchAction.Builder()
             .setAndroidActivity(
                 ActionBuilders.AndroidActivity.Builder()
                     .setPackageName(packageName)
-                    .setClassName(MainActivity::class.java.name)
-                    .addKeyToExtraMapping(
-                        EXTRA_TILE_COMMAND,
-                        ActionBuilders.AndroidStringExtra.Builder()
-                            .setValue(CMD_CONNECT_LCD)
-                            .build()
-                    )
+                    .setClassName(className)
+                    .apply(extras)
                     .build()
             )
             .build()
 
-    /** Launches MainActivity with no command — surfaces the running app. */
-    private fun openAppAction(): ActionBuilders.Action =
-        ActionBuilders.LaunchAction.Builder()
-            .setAndroidActivity(
-                ActionBuilders.AndroidActivity.Builder()
-                    .setPackageName(packageName)
-                    .setClassName(MainActivity::class.java.name)
-                    .build()
-            )
-            .build()
-
-    // ── Device parameters ─────────────────────────────────────────────────────
-
-    private fun defaultDeviceParams() =
-        androidx.wear.protolayout.DeviceParametersBuilders.DeviceParameters.Builder()
-            .setScreenWidthDp(192)
-            .setScreenHeightDp(192)
-            .setScreenDensity(2.0f)
-            .setScreenShape(
-                androidx.wear.protolayout.DeviceParametersBuilders.SCREEN_SHAPE_ROUND
-            )
-            .build()
-
-    // ── Constants ─────────────────────────────────────────────────────────────
+    private fun clickable(id: String, action: ActionBuilders.Action) =
+        ModifiersBuilders.Clickable.Builder().setId(id).setOnClick(action).build()
 
     companion object {
-        const val CMD_CONNECT_LCD = "connect_lcd"
-
-        // Tile colour palette (ARGB int literals)
-        private val COLOR_GREEN     = 0xFF4CAF50.toInt()   // connected / power on
-        private val COLOR_GREEN_DIM = 0xFF2E7D32.toInt()   // stale power-on
-        private val COLOR_AMBER     = 0xFFFFC107.toInt()   // stale device name
-        private val COLOR_ERROR     = 0xFFCF6679.toInt()   // connection failed
-        private val COLOR_LIGHT     = 0xFFE0E0E0.toInt()   // general content text
-        private val COLOR_DIM       = 0xFFAAAAAA.toInt()   // secondary / disabled text
+        private const val RESOURCES_VERSION = "3"
+        private const val ICON_POWER = "power"
+        private const val ICON_PREV = "prev"
+        private const val ICON_NEXT = "next"
+        private val ICONS = mapOf(
+            ICON_POWER to R.drawable.ic_wled_power_on,
+            ICON_PREV to R.drawable.ic_wled_prev,
+            ICON_NEXT to R.drawable.ic_wled_next,
+        )
+        private val COLOR_GREEN = 0xFF4CAF50.toInt()
+        private val COLOR_ERROR = 0xFFCF6679.toInt()
+        private val COLOR_LIGHT = 0xFFE0E0E0.toInt()
+        private val COLOR_DIM   = 0xFFAAAAAA.toInt()
     }
 }
