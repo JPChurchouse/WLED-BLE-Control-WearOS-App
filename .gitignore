@@ -31,3 +31,7 @@ build
 
 keystore.properties
 .gradle
+
+# Signing keys - never commit
+*.jks
+*.keystore
