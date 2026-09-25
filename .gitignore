@@ -35,3 +35,4 @@ keystore.properties
 # Signing keys - never commit
 *.jks
 *.keystore
+local.properties
