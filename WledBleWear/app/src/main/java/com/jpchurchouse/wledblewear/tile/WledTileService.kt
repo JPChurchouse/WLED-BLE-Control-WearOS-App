@@ -138,24 +138,39 @@ class WledTileService : TileService() {
             )
             .addButtonContent(actionButton(Actions.PREV, "Previous preset") { setIconContent(ICON_PREV) })
             .addButtonContent(actionButton(Actions.NEXT, "Next preset") { setIconContent(ICON_NEXT) })
-        prefs.currentFavourites().take(2).forEach { fav ->
+        val favourites = prefs.currentFavourites().take(2)
+        favourites.forEach { fav ->
             buttons.addButtonContent(actionButton(Actions.preset(fav.id), fav.name) { setTextContent(fav.shortLabel.take(3)) })
         }
 
-        return PrimaryLayout.Builder(device)
+        // A second row of buttons leaves no room for PrimaryLayout's secondary label (it gets
+        // clipped), so then progress and errors take over the primary label instead.
+        val twoRows = favourites.isNotEmpty()
+        val showStatusAsTitle = twoRows && (busy != null || failed)
+        val title = if (showStatusAsTitle) status else "${if (connected) "●" else "○"} $name"
+        val titleColor = when {
+            showStatusAsTitle -> statusColor
+            connected -> COLOR_GREEN
+            else -> COLOR_LIGHT
+        }
+
+        val layout = PrimaryLayout.Builder(device)
             .setPrimaryLabelTextContent(
-                Text.Builder(this, "${if (connected) "●" else "○"} $name")
+                Text.Builder(this, title)
                     .setTypography(Typography.TYPOGRAPHY_CAPTION1)
-                    .setColor(argb(if (connected) COLOR_GREEN else COLOR_LIGHT))
+                    .setColor(argb(titleColor))
                     .build()
             )
             .setContent(buttons.build())
-            .setSecondaryLabelTextContent(
+        if (!twoRows) {
+            layout.setSecondaryLabelTextContent(
                 Text.Builder(this, status)
                     .setTypography(Typography.TYPOGRAPHY_CAPTION2)
                     .setColor(argb(statusColor))
                     .build()
             )
+        }
+        return layout
             .setPrimaryChipContent(openAppChip(device))
             .build()
     }

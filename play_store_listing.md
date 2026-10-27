@@ -43,7 +43,7 @@ TILE
 
 Add the WLED Control tile to your carousel for one-swipe control:
 
-● Device name with current power state and preset  
+● Device name and connection status, with the power button lit when the light is on  
 ● Power toggle, previous and next preset  
 ● Two favourite preset buttons, labelled with their quick-load emoji  
 ● Shows the last known state when the light is out of range  

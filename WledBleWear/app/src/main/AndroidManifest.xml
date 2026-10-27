@@ -63,6 +63,10 @@
             <intent-filter>
                 <action android:name="androidx.wear.tiles.action.BIND_TILE_PROVIDER" />
             </intent-filter>
+            <!-- Without a preview some tile pickers (e.g. One UI Watch 8) don't list the tile. -->
+            <meta-data
+                android:name="androidx.wear.tiles.PREVIEW"
+                android:resource="@drawable/tile_preview" />
         </service>
 
         <!-- ── Complication #1 — icon only (SMALL_IMAGE) ──────────────── -->
