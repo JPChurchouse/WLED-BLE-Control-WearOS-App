@@ -11,8 +11,13 @@
     <string name="power_off">OFF</string>
     <string name="open_app">Open App</string>
     <string name="tile_no_device">Open app\nto connect</string>
-    <string name="complication_icon_label">WLED Icon</string>
-    <string name="complication_launch_label">WLED Device</string>
-    <string name="complication_toggle_label">WLED Power</string>
-    <string name="complication_status_label">WLED Status</string>
+    <string name="complication_icon_label">App icon</string>
+    <string name="complication_launch_label">Device</string>
+    <string name="complication_toggle_label">Power</string>
+    <string name="complication_status_label">Status</string>
+    <string name="complication_preset_label">Preset</string>
+    <string name="complication_next_label">Next preset</string>
+    <string name="complication_off_label">Off &amp; disconnect</string>
+    <string name="complication_nightlight_label">Sleep timer</string>
+    <string name="complication_brightness_label">Brightness</string>
 </resources>

@@ -1,133 +1,121 @@
 package com.jpchurchouse.wledblewear
 
 import android.app.Application
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.content.ComponentName
 import androidx.datastore.preferences.core.edit
 import androidx.wear.tiles.TileService
 import androidx.wear.watchface.complications.datasource.ComplicationDataSourceUpdateRequester
+import com.jpchurchouse.wledblewear.action.ActionService
 import com.jpchurchouse.wledblewear.ble.BleManager
+import com.jpchurchouse.wledblewear.complication.WledBrightnessComplicationService
 import com.jpchurchouse.wledblewear.complication.WledLaunchComplicationService
+import com.jpchurchouse.wledblewear.complication.WledNextComplicationService
+import com.jpchurchouse.wledblewear.complication.WledNightlightComplicationService
+import com.jpchurchouse.wledblewear.complication.WledPresetComplicationService
 import com.jpchurchouse.wledblewear.complication.WledStatusComplicationService
 import com.jpchurchouse.wledblewear.complication.WledToggleComplicationService
 import com.jpchurchouse.wledblewear.data.WledPreferences
 import com.jpchurchouse.wledblewear.data.wledDataStore
+import com.jpchurchouse.wledblewear.model.ConnectProblem
 import com.jpchurchouse.wledblewear.model.ConnectionState
 import com.jpchurchouse.wledblewear.tile.WledTileService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /**
- * Application subclass — owns the BleManager singleton and the app-scoped
- * coroutine that mirrors BLE state to DataStore.
- *
- * WHY appScope / startStateSync lives here (not in ViewModel):
- *   ViewModel is destroyed with MainActivity.  The tile and complication services
- *   run in the same process but independently of any Activity.  Moving the
- *   DataStore-write + tile/complication-refresh loop to Application ensures it
- *   is always running while the process is alive — even when the watch face is
- *   showing and no Activity exists.
+ * Owns the BleManager singleton and the app-scoped coroutine that mirrors BLE state into
+ * DataStore for the tile and complications, which run without any Activity.
  */
 class WledApplication : Application() {
 
     lateinit var bleManager: BleManager
         private set
 
-    /**
-     * Application-lifetime coroutine scope.
-     * Dispatchers.Main — required for GATT ops inside BleManager; safe here
-     * because we only do DataStore writes and intent broadcasts (both fast).
-     */
     val appScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     override fun onCreate() {
         super.onCreate()
         bleManager = BleManager(applicationContext)
-        createNotificationChannels()
+        ActionService.ensureChannel(this)
         startStateSync()
     }
 
-    /**
-     * Collects every BLE state emission and:
-     *  1. Writes the relevant subset to DataStore (tile / complication source of truth).
-     *  2. Requests a tile redraw.
-     *  3. Requests a complication redraw on all registered instances.
-     *
-     * DataStore write semantics:
-     *  - Connected   → write IS_CONNECTED, IS_POWER_ON, ACTIVE_PRESET_NAME; clear CONNECT_FAILED
-     *  - Disconnected → write IS_CONNECTED=false; preserve IS_POWER_ON / ACTIVE_PRESET_NAME
-     *                   so the tile can show "last known" stale state
-     *  - Idle        → write IS_CONNECTED=false; REMOVE IS_POWER_ON / ACTIVE_PRESET_NAME
-     *                   because the user explicitly disconnected — no stale data to show
-     */
-    private fun createNotificationChannels() {
-        // Channel for WledToggleForegroundService (complication #3 background BLE toggle)
-        val nm = getSystemService(NotificationManager::class.java)
-        if (nm.getNotificationChannel(TOGGLE_SERVICE_CHANNEL) == null) {
-            nm.createNotificationChannel(
-                NotificationChannel(
-                    TOGGLE_SERVICE_CHANNEL,
-                    "WLED Background Actions",
-                    NotificationManager.IMPORTANCE_LOW,
-                ).apply {
-                    description = "Silent notifications for background WLED BLE operations"
-                }
-            )
-        }
-    }
+    /** The subset of state the tile and complications show. */
+    private data class Snapshot(
+        val address: String?,
+        val connected: Boolean,
+        val powerOn: Boolean,
+        val brightness: Int,
+        val presetName: String?,
+        val nightlightEndMs: Long,
+        val problem: ConnectProblem?,
+    )
 
+    /**
+     * Mirrors BLE state into DataStore. Last-known values are kept when the link drops,
+     * because tiles and complications connect only briefly; they are cleared only when a
+     * different device becomes current (rememberDevice / forgetDevice).
+     */
     private fun startStateSync() {
         appScope.launch {
-            bleManager.uiState.collect { state ->
-                wledDataStore.edit { prefs ->
-                    when (state.connectionState) {
-                        is ConnectionState.Connected -> {
-                            prefs[WledPreferences.IS_CONNECTED]   = true
-                            prefs[WledPreferences.IS_POWER_ON]    = state.isPowerOn
-                            prefs.remove(WledPreferences.CONNECT_FAILED)
-
-                            val presetName = state.presets
-                                .find { it.id == state.activePresetId }?.name
-                            if (presetName != null) {
-                                prefs[WledPreferences.ACTIVE_PRESET_NAME] = presetName
-                            } else {
-                                prefs.remove(WledPreferences.ACTIVE_PRESET_NAME)
-                            }
-                        }
-
-                        is ConnectionState.Disconnected -> {
-                            // Involuntary drop — keep IS_POWER_ON / ACTIVE_PRESET_NAME
-                            // so the tile can show them as "last known".
-                            prefs[WledPreferences.IS_CONNECTED] = false
-                        }
-
-                        is ConnectionState.Idle -> {
-                            // User-initiated disconnect — wipe stale data entirely.
-                            prefs[WledPreferences.IS_CONNECTED] = false
-                            prefs.remove(WledPreferences.IS_POWER_ON)
-                            prefs.remove(WledPreferences.ACTIVE_PRESET_NAME)
-                        }
-
-                        else -> Unit  // Scanning / Connecting — no DataStore update
-                    }
+            bleManager.uiState
+                .map {
+                    Snapshot(
+                        address = it.connectedAddress,
+                        connected = it.connectionState == ConnectionState.Connected,
+                        powerOn = it.isPowerOn,
+                        brightness = it.brightness,
+                        presetName = it.activePreset?.name,
+                        // Round so the countdown's own drift doesn't count as a change.
+                        nightlightEndMs = it.nightlightEndMs / 10_000 * 10_000,
+                        problem = it.problem,
+                    )
                 }
-
-                // Refresh tile and all registered complication instances
-                TileService.getUpdater(this@WledApplication)
-                    .requestUpdate(WledTileService::class.java)
-                refreshComplications()
-            }
+                .distinctUntilChanged()
+                .collect { s ->
+                    val current = wledDataStore.data.first()[WledPreferences.DEVICE_ADDRESS]
+                    if (s.address == null || s.address != current) return@collect
+                    wledDataStore.edit { prefs ->
+                        prefs[WledPreferences.IS_CONNECTED] = s.connected
+                        if (s.connected) {
+                            prefs[WledPreferences.IS_POWER_ON] = s.powerOn
+                            prefs[WledPreferences.BRIGHTNESS] = s.brightness
+                            if (s.presetName != null) prefs[WledPreferences.ACTIVE_PRESET_NAME] = s.presetName
+                            else prefs.remove(WledPreferences.ACTIVE_PRESET_NAME)
+                            if (s.nightlightEndMs > 0) prefs[WledPreferences.NIGHTLIGHT_END_MS] = s.nightlightEndMs
+                            else prefs.remove(WledPreferences.NIGHTLIGHT_END_MS)
+                            prefs[WledPreferences.STATE_UPDATED_MS] = System.currentTimeMillis()
+                            prefs.remove(WledPreferences.CONNECT_FAILED)
+                            prefs.remove(WledPreferences.NEEDS_PAIRING)
+                        }
+                        when (s.problem) {
+                            ConnectProblem.PAIRING_WINDOW_CLOSED,
+                            ConnectProblem.PAIRING_FAILED,
+                            ConnectProblem.BOND_LOST -> prefs[WledPreferences.NEEDS_PAIRING] = s.problem.name
+                            else -> Unit
+                        }
+                    }
+                    refreshSurfaces()
+                }
         }
     }
 
-    private fun refreshComplications() {
+    /** Ask the system to redraw the tile and every complication. */
+    fun refreshSurfaces() {
+        TileService.getUpdater(this).requestUpdate(WledTileService::class.java)
         listOf(
             WledLaunchComplicationService::class.java,
             WledToggleComplicationService::class.java,
             WledStatusComplicationService::class.java,
+            WledPresetComplicationService::class.java,
+            WledNextComplicationService::class.java,
+            WledNightlightComplicationService::class.java,
+            WledBrightnessComplicationService::class.java,
         ).forEach { cls ->
             ComplicationDataSourceUpdateRequester
                 .create(this, ComponentName(this, cls))
@@ -138,10 +126,5 @@ class WledApplication : Application() {
     override fun onTerminate() {
         super.onTerminate()
         bleManager.cleanup()
-    }
-
-    companion object {
-        /** Shared with WledToggleForegroundService — must match. */
-        const val TOGGLE_SERVICE_CHANNEL = "wled_bg_actions"
     }
 }

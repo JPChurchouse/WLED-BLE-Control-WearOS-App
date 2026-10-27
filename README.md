@@ -4,6 +4,8 @@ A WearOS app for controlling [WLED](https://kno.wled.ge/) LED controllers over B
 
 > Tested on a Galaxy Watch 8 running WearOS 6.0, against an ESP32 running WLED with a custom BLE GATT server firmware.
 
+> **v2 in development.** v2 works with the [WLED BLE Control usermod](https://github.com/JPChurchouse/WLED-BLE-Control-Usermod) (WLED 16+). It adds secure passkey pairing, brightness, nightlight and more tiles and complications. It is not compatible with the v1 firmware described below. See [V2_BRIEFING.md](V2_BRIEFING.md) for the plan.
+
 ---
 
 ## Contents

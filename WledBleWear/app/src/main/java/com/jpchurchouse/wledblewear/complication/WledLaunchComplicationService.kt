@@ -13,12 +13,11 @@ import androidx.wear.watchface.complications.data.SmallImageComplicationData
 import androidx.wear.watchface.complications.data.SmallImageType
 import androidx.wear.watchface.complications.datasource.ComplicationDataSourceService
 import androidx.wear.watchface.complications.datasource.ComplicationRequest
-import com.jpchurchouse.wledblewear.EXTRA_TILE_COMMAND
+import com.jpchurchouse.wledblewear.EXTRA_OPEN_CURRENT
 import com.jpchurchouse.wledblewear.MainActivity
 import com.jpchurchouse.wledblewear.R
 import com.jpchurchouse.wledblewear.data.WledPreferences
 import com.jpchurchouse.wledblewear.data.wledDataStore
-import com.jpchurchouse.wledblewear.tile.WledTileService
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 
@@ -27,7 +26,7 @@ import kotlinx.coroutines.runBlocking
  *
  * Displays the last-connected device name next to the WLED icon.
  * Falls back to "WLED BLE Wear" if no device has been configured.
- * Tapping launches MainActivity with the "connect_lcd" command.
+ * Tapping launches MainActivity with the open-current-device extra.
  *
  * AndroidManifest.xml entry required:
  *
@@ -100,7 +99,7 @@ class WledLaunchComplicationService : ComplicationDataSourceService() {
             this,
             REQUEST_CODE,
             Intent(this, MainActivity::class.java).apply {
-                putExtra(EXTRA_TILE_COMMAND, WledTileService.CMD_CONNECT_LCD)
+                putExtra(EXTRA_OPEN_CURRENT, true)
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,

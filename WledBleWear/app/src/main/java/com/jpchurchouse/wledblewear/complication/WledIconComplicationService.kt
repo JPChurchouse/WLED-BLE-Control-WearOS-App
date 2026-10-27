@@ -11,16 +11,15 @@ import androidx.wear.watchface.complications.data.SmallImageComplicationData
 import androidx.wear.watchface.complications.data.SmallImageType
 import androidx.wear.watchface.complications.datasource.ComplicationDataSourceService
 import androidx.wear.watchface.complications.datasource.ComplicationRequest
-import com.jpchurchouse.wledblewear.EXTRA_TILE_COMMAND
+import com.jpchurchouse.wledblewear.EXTRA_OPEN_CURRENT
 import com.jpchurchouse.wledblewear.MainActivity
 import com.jpchurchouse.wledblewear.R
-import com.jpchurchouse.wledblewear.tile.WledTileService
 
 /**
  * Complication #1 — Icon only (SMALL_IMAGE).
  *
  * Displays the WLED app icon.  Tapping launches MainActivity with the
- * "connect_lcd" command: the app will attempt to reconnect to the last
+ * open-current-device extra: the app will attempt to reconnect to the last
  * connected device and navigate to the control screen.
  *
  * AndroidManifest.xml entry required:
@@ -79,7 +78,7 @@ class WledIconComplicationService : ComplicationDataSourceService() {
             this,
             REQUEST_CODE,
             Intent(this, MainActivity::class.java).apply {
-                putExtra(EXTRA_TILE_COMMAND, WledTileService.CMD_CONNECT_LCD)
+                putExtra(EXTRA_OPEN_CURRENT, true)
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,

@@ -63,6 +63,10 @@
             <intent-filter>
                 <action android:name="androidx.wear.tiles.action.BIND_TILE_PROVIDER" />
             </intent-filter>
+            <!-- Without a preview some tile pickers (e.g. One UI Watch 8) don't list the tile. -->
+            <meta-data
+                android:name="androidx.wear.tiles.PREVIEW"
+                android:resource="@drawable/tile_preview" />
         </service>
 
         <!-- ── Complication #1 — icon only (SMALL_IMAGE) ──────────────── -->
@@ -116,7 +120,7 @@
             </intent-filter>
             <meta-data
                 android:name="android.support.wearable.complications.SUPPORTED_TYPES"
-                android:value="SHORT_TEXT" />
+                android:value="SHORT_TEXT,LONG_TEXT" />
             <meta-data
                 android:name="android.support.wearable.complications.UPDATE_PERIOD_SECONDS"
                 android:value="0" />
@@ -133,30 +137,114 @@
             </intent-filter>
             <meta-data
                 android:name="android.support.wearable.complications.SUPPORTED_TYPES"
-                android:value="LONG_TEXT" />
+                android:value="LONG_TEXT,SHORT_TEXT" />
             <meta-data
                 android:name="android.support.wearable.complications.UPDATE_PERIOD_SECONDS"
                 android:value="0" />
         </service>
 
-        <!-- ── Complication #3 tap receiver ───────────────────────────── -->
-        <!--
-            Receives the PendingIntent broadcast fired by WledToggleComplicationService
-            and immediately starts WledToggleForegroundService.
-            exported="false": only this app can send to it (no external trigger surface).
-        -->
-        <receiver
-            android:name=".complication.WledToggleBroadcastReceiver"
-            android:exported="false" />
-
-        <!-- ── Complication #3 background BLE toggle service ──────────── -->
-        <!--
-            foregroundServiceType="connectedDevice": required on API 34+ for BLE GATT
-            operations in a foreground service.  Covered by
-            FOREGROUND_SERVICE_CONNECTED_DEVICE permission declared above.
-        -->
+        <!-- ── Complication #5 — current preset (SHORT_TEXT / LONG_TEXT) ── -->
         <service
-            android:name=".complication.WledToggleForegroundService"
+            android:name=".complication.WledPresetComplicationService"
+            android:exported="true"
+            android:label="@string/complication_preset_label"
+            android:permission="com.google.android.wearable.permission.BIND_COMPLICATION_PROVIDER">
+            <intent-filter>
+                <action android:name="android.support.wearable.complications.ACTION_COMPLICATION_UPDATE_REQUEST" />
+            </intent-filter>
+            <meta-data
+                android:name="android.support.wearable.complications.SUPPORTED_TYPES"
+                android:value="SHORT_TEXT,LONG_TEXT" />
+            <meta-data
+                android:name="android.support.wearable.complications.UPDATE_PERIOD_SECONDS"
+                android:value="0" />
+        </service>
+
+        <!-- ── Complication #6 — next preset (tap action) ──────────────── -->
+        <service
+            android:name=".complication.WledNextComplicationService"
+            android:exported="true"
+            android:label="@string/complication_next_label"
+            android:permission="com.google.android.wearable.permission.BIND_COMPLICATION_PROVIDER">
+            <intent-filter>
+                <action android:name="android.support.wearable.complications.ACTION_COMPLICATION_UPDATE_REQUEST" />
+            </intent-filter>
+            <meta-data
+                android:name="android.support.wearable.complications.SUPPORTED_TYPES"
+                android:value="SHORT_TEXT,LONG_TEXT,SMALL_IMAGE" />
+            <meta-data
+                android:name="android.support.wearable.complications.UPDATE_PERIOD_SECONDS"
+                android:value="0" />
+        </service>
+
+        <!-- ── Complication #7 — off and disconnect (tap action) ──────── -->
+        <service
+            android:name=".complication.WledOffComplicationService"
+            android:exported="true"
+            android:label="@string/complication_off_label"
+            android:permission="com.google.android.wearable.permission.BIND_COMPLICATION_PROVIDER">
+            <intent-filter>
+                <action android:name="android.support.wearable.complications.ACTION_COMPLICATION_UPDATE_REQUEST" />
+            </intent-filter>
+            <meta-data
+                android:name="android.support.wearable.complications.SUPPORTED_TYPES"
+                android:value="SHORT_TEXT,SMALL_IMAGE" />
+            <meta-data
+                android:name="android.support.wearable.complications.UPDATE_PERIOD_SECONDS"
+                android:value="0" />
+        </service>
+
+        <!-- ── Complication #8 — sleep timer countdown ─────────────────── -->
+        <service
+            android:name=".complication.WledNightlightComplicationService"
+            android:exported="true"
+            android:label="@string/complication_nightlight_label"
+            android:permission="com.google.android.wearable.permission.BIND_COMPLICATION_PROVIDER">
+            <intent-filter>
+                <action android:name="android.support.wearable.complications.ACTION_COMPLICATION_UPDATE_REQUEST" />
+            </intent-filter>
+            <meta-data
+                android:name="android.support.wearable.complications.SUPPORTED_TYPES"
+                android:value="SHORT_TEXT" />
+            <meta-data
+                android:name="android.support.wearable.complications.UPDATE_PERIOD_SECONDS"
+                android:value="0" />
+        </service>
+
+        <!-- ── Complication #9 — brightness gauge ──────────────────────── -->
+        <service
+            android:name=".complication.WledBrightnessComplicationService"
+            android:exported="true"
+            android:label="@string/complication_brightness_label"
+            android:permission="com.google.android.wearable.permission.BIND_COMPLICATION_PROVIDER">
+            <intent-filter>
+                <action android:name="android.support.wearable.complications.ACTION_COMPLICATION_UPDATE_REQUEST" />
+            </intent-filter>
+            <meta-data
+                android:name="android.support.wearable.complications.SUPPORTED_TYPES"
+                android:value="RANGED_VALUE,SHORT_TEXT" />
+            <meta-data
+                android:name="android.support.wearable.complications.UPDATE_PERIOD_SECONDS"
+                android:value="0" />
+        </service>
+
+        <!-- ── Background one-tap actions (tiles and complications) ────── -->
+        <!--
+            Tile buttons and complication taps: this invisible activity starts ActionService
+            (allowed only from the foreground since Android 12) and finishes. Exported because
+            the tile host and watch face launch it.
+        -->
+        <activity
+            android:name=".action.ActionActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- connectedDevice: required on API 34+ for BLE work in a foreground service. -->
+        <service
+            android:name=".action.ActionService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
 
